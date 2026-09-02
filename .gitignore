@@ -1,0 +1,8 @@
+/vendor/
+/composer.lock
+/.env.local
+/.env.*.local
+/.phpunit.cache/
+/.php-cs-fixer.cache
+/phpstan.cache/
+/.ddev

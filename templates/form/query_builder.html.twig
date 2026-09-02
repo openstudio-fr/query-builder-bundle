@@ -1,0 +1,25 @@
+{# The parent HiddenType would otherwise resolve to hidden_row, which renders the widget alone:
+   no label, no errors, no help, for a widget the user can see and that can be refused. #}
+{% block query_builder_row %}
+    <div>
+        {{- form_label(form) -}}
+        {{- form_errors(form) -}}
+        {{- form_widget(form) -}}
+        {{- form_help(form) -}}
+    </div>
+{% endblock %}
+
+{% block query_builder_widget %}
+    {%- set controller = 'query-builder' -%}
+    {%- set attr = attr|merge({ ('data-' ~ controller ~ '-target'): 'input' }) -%}
+    <div {{ stimulus_controller(controller, {
+        conditions: value is empty ? '{}' : value,
+        fields: fields,
+        operators: operators,
+        processor: processor,
+        lang: lang,
+    }) }}>
+        <div {{ stimulus_target(controller, 'queryBuilder') }}></div>
+        {{- block('hidden_widget') -}}
+    </div>
+{% endblock %}

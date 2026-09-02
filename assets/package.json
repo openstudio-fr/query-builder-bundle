@@ -1,0 +1,53 @@
+{
+    "name": "@openstudio/query-builder-bundle",
+    "version": "1.0.0",
+    "keywords": [
+        "symfony-ux"
+    ],
+    "symfony": {
+        "controllers": {
+            "query_builder": {
+                "main": "controllers/query_builder_controller.js",
+                "name": "query-builder",
+                "fetch": "lazy",
+                "enabled": true
+            }
+        },
+        "importmap": {
+            "@hotwired/stimulus": "^3.2.2",
+
+            "react": "19.2.4",
+            "react-dom/client": "19.2.4",
+            "react-dom": "19.2.4",
+            "react/jsx-runtime": "19.2.4",
+
+            "react-querybuilder": "8.14.0",
+            "@react-querybuilder/core": "8.14.0",
+            "@react-querybuilder/core/parseJsonLogic": "8.14.0",
+            "react-querybuilder/dist/query-builder.css": "8.14.0",
+            "react-querybuilder/parseJsonLogic": "8.14.0",
+            "@react-querybuilder/bootstrap": "8.14.0",
+            "@react-querybuilder/dnd": "8.14.0",
+
+            "react-dnd": "16.0.1",
+            "dnd-core": "16.0.1",
+            "react-dnd-html5-backend": "16.0.1",
+            "react-dnd-touch-backend": "16.0.1",
+
+            "@react-dnd/invariant": "4.0.2",
+            "@react-dnd/shallowequal": "4.0.2",
+            "@react-dnd/asap": "5.0.2"
+        }
+    },
+    "peerDependencies": {
+        "@hotwired/stimulus": "^3.2.2",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "react-querybuilder": "^8.14.0",
+        "@react-querybuilder/bootstrap": "^8.14.0",
+        "@react-querybuilder/dnd": "^8.14.0",
+        "react-dnd": "^16.0.1",
+        "react-dnd-html5-backend": "^16.0.1",
+        "react-dnd-touch-backend": "^16.0.1"
+    }
+}
