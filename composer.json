@@ -1,0 +1,44 @@
+{
+    "name": "openstudio/query-builder-bundle",
+    "description": "ReactQueryBuilder for Symfony 7 — based on the Symfony framework.",
+    "type": "symfony-bundle",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.3",
+        "symfony/asset-mapper": "^7.4",
+        "symfony/config": "^7.4",
+        "symfony/dependency-injection": "^7.4",
+        "symfony/form": "^7.4",
+        "symfony/framework-bundle": "^7.4",
+        "symfony/http-foundation": "^7.4",
+        "symfony/http-kernel": "^7.4",
+        "symfony/options-resolver": "^7.4",
+        "symfony/stimulus-bundle": "^2.31",
+        "thecodingmachine/safe": "^2.5",
+        "symfony/twig-bundle": "^7.4",
+        "webmozart/assert": "^2.4"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "^2.1",
+        "phpstan/phpstan-symfony": "^2.0",
+        "vimeo/psalm": "^6.0",
+        "friendsofphp/php-cs-fixer": "^3.64"
+    },
+    "autoload": {
+        "psr-4": {
+            "OpenStudio\\QueryBuilderBundle\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "OpenStudio\\QueryBuilderBundle\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "symfony": {
+            "require": "^7.4"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
