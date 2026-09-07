@@ -11,6 +11,7 @@ import {
     defaultOperators,
     defaultPlaceholderFieldName,
     defaultPlaceholderOperatorName,
+    defaultPlaceholderValueName,
     defaultRuleProcessorJsonLogic,
     defaultRuleProcessorParameterized,
     defaultTranslations,
@@ -155,8 +156,13 @@ export default class extends Controller {
     // attribute write carrying what the editor already has is not a change.
     #mountedSettings = null;
 
+    // The 'processor' value the hidden input was last written for. Not part of the mount: a
+    // change of format is a rewrite of the input, not a rebuild of the editor.
+    #appliedProcessor = null;
+
     connect() {
         const fields = this.#readSettings();
+        this.#appliedProcessor = this.processorValue;
         this.#query = this.#getDefaultQuery();
         this.#mount(fields, this.#query);
     }
@@ -177,6 +183,17 @@ export default class extends Controller {
     }
     langValueChanged() {
         this.#settingsChanged();
+    }
+
+    // Same guards. A real change stores the tree the editor holds in the new format, the
+    // migration a form reopened on a value saved under another processor would otherwise wait
+    // for the first edit to get.
+    processorValueChanged() {
+        if (!this.#root || this.processorValue === this.#appliedProcessor) {
+            return;
+        }
+        this.#appliedProcessor = this.processorValue;
+        this.#onQueryChange(this.#query);
     }
 
     #settingsChanged() {
@@ -252,8 +269,9 @@ export default class extends Controller {
     // operator and shows the first one while the rule still holds the old name, and the server
     // refuses the tree anyway. A rule with no field or no operator picked yet is not one of those
     // and stays; the root group stays whatever is left in it. A 'valuesList' rule whose field no
-    // longer offers that operator but still offers '=' becomes the equality it is stored as,
-    // which is also how it reopens when 'valuesList' is not active.
+    // longer offers that operator, or no longer declares its value, becomes the equality it is
+    // stored as when the field offers '=': the value stays visible, in a text input, which is
+    // also how such a rule reopens. A value not picked yet is not one that vanished.
     #pruneQuery(group, offeredOperators) {
         const rules = [];
         for (const rule of group.rules ?? []) {
@@ -272,12 +290,17 @@ export default class extends Controller {
             if (!offered) {
                 continue;
             }
-            if (rule.operator === defaultPlaceholderOperatorName || offered.has(rule.operator)) {
-                rules.push(rule);
+            if (rule.operator === 'valuesList') {
+                const picked = null != rule.value && '' !== rule.value && rule.value !== defaultPlaceholderValueName;
+                if (offered.has('valuesList') && (!picked || (this.#fieldsValues[rule.field] ?? []).includes(rule.value))) {
+                    rules.push(rule);
+                } else if (offered.has('=')) {
+                    rules.push({ ...rule, operator: '=', value: picked ? rule.value : '' });
+                }
                 continue;
             }
-            if (rule.operator === 'valuesList' && offered.has('=')) {
-                rules.push({ ...rule, operator: '=' });
+            if (rule.operator === defaultPlaceholderOperatorName || offered.has(rule.operator)) {
+                rules.push(rule);
             }
         }
         return { ...group, rules };
