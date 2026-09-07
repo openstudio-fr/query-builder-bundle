@@ -1,6 +1,6 @@
 # Query Builder Bundle
 
-[React Query Builder](https://react-querybuilder.js.org/) packaged as a Symfony form type, served through AssetMapper. Users compose nested and/or condition groups in the browser, with typed fields, drag-and-drop and translated labels. Your application receives the result as a [JsonLogic](https://jsonlogic.com/) tree it can store and evaluate server side, or as the editor's own tree when it compiles the rules itself. There is no Node build step and no dedicated endpoint: it is one more field in a regular Symfony form.
+[React Query Builder](https://react-querybuilder.js.org/) packaged as a Symfony form type. Users compose nested and/or condition groups in the browser, with typed fields, drag-and-drop and translated labels. Your application receives the result as a [JsonLogic](https://jsonlogic.com/) tree it can store and evaluate server side, or as the editor's own tree when it compiles the rules itself. The editor is a Stimulus controller that AssetMapper or Webpack Encore loads like any other, and there is no dedicated endpoint: it is one more field in a regular Symfony form.
 
 The moving parts:
 
@@ -12,7 +12,8 @@ The moving parts:
 
 - PHP 8.3+
 - Symfony 7.4
-- AssetMapper, Stimulus and Twig (pulled in as dependencies)
+- Stimulus and Twig (pulled in as dependencies)
+- AssetMapper, or Webpack Encore with `@symfony/stimulus-bridge`, to load the controller (see [Assets](#assets))
 - Bootstrap CSS on the pages that render the widget: the editor uses the Bootstrap theme of React Query Builder and does not ship Bootstrap itself
 
 ## Installation
@@ -44,8 +45,11 @@ return [
 
 ### Assets
 
-The bundle exposes its assets to AssetMapper automatically. Enable the Stimulus controller in your
-`assets/controllers.json`:
+The bundle ships one Stimulus controller, `query-builder`, which mounts the React editor. The libraries it needs (React 19, React Query Builder 8.14 with its Bootstrap and drag-and-drop packages, React DnD with its HTML5 and touch backends) are declared as peer dependencies in [assets/package.json](assets/package.json). The application loads the controller with AssetMapper or with Webpack Encore. The bundle requires neither, so install the one you use.
+
+#### With AssetMapper
+
+When `symfony/asset-mapper` is installed, the bundle registers its `assets/` directory under the `@openstudio/query-builder-bundle` namespace. Enable the Stimulus controller in your `assets/controllers.json`:
 
 ```json
 {
@@ -66,17 +70,40 @@ Then add the JavaScript dependencies to your importmap:
 php bin/console importmap:require react react-dom react-dom/client react/jsx-runtime \
     react-querybuilder react-querybuilder/parseJsonLogic react-querybuilder/dist/query-builder.css \
     @react-querybuilder/bootstrap @react-querybuilder/dnd \
-    react-dnd react-dnd-html5-backend react-dnd-touch-backend
+    react-dnd react-dnd-html5-backend react-dnd-touch-backend redux
 ```
 
-The versions the controller was written against (React 19, React Query Builder 8.14) are pinned in [assets/package.json](assets/package.json).
+`redux` is on the list on purpose. The importmap holds one version per package, and `dnd-core`, a dependency of React DnD, would otherwise bring redux 4 in first while the `@reduxjs/toolkit` used by React Query Builder needs redux 5: the controller then fails to load with "The requested module 'redux' does not provide an export named 'isAction'". Requiring `redux` yourself resolves it to the current major.
+
+#### With Webpack Encore
+
+Add the bundle's `assets/` directory to your `package.json` as a path dependency, so that `@symfony/stimulus-bridge` finds it in `node_modules` like any Symfony UX package:
+
+```json
+{
+    "devDependencies": {
+        "@openstudio/query-builder-bundle": "file:vendor/openstudio/query-builder-bundle/assets"
+    }
+}
+```
+
+Enable the controller in `assets/controllers.json` with the same entry as above, install the package and its peer dependencies, then rebuild:
+
+```bash
+npm install
+npm install react react-dom react-querybuilder @react-querybuilder/bootstrap @react-querybuilder/dnd \
+    react-dnd react-dnd-html5-backend react-dnd-touch-backend
+npm run build
+```
+
+`enableStimulusBridge()` in `webpack.config.js` picks the controller up, lazy loading included, and the stylesheet it imports goes through Encore's CSS handling. The controller is written without JSX, so the React preset of Encore is not needed.
 
 ## Configuration
 
 The bundle has no configuration file of its own. At boot it prepends:
 
 - its form theme to Twig, so the widget renders without any `form_themes` setup on your side;
-- its `assets/` directory to AssetMapper under the `@openstudio/query-builder-bundle` namespace.
+- its `assets/` directory to AssetMapper under the `@openstudio/query-builder-bundle` namespace, when AssetMapper is installed.
 
 The default language of the editor is `kernel.default_locale`. Everything else is set per field through the form options below.
 

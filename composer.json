@@ -5,7 +5,6 @@
     "license": "MIT",
     "require": {
         "php": ">=8.3",
-        "symfony/asset-mapper": "^7.4",
         "symfony/config": "^7.4",
         "symfony/dependency-injection": "^7.4",
         "symfony/form": "^7.4",
@@ -22,7 +21,11 @@
         "phpstan/phpstan": "^2.1",
         "phpstan/phpstan-symfony": "^2.0",
         "vimeo/psalm": "^6.0",
-        "friendsofphp/php-cs-fixer": "^3.64"
+        "friendsofphp/php-cs-fixer": "^3.64",
+        "symfony/asset-mapper": "^7.4"
+    },
+    "suggest": {
+        "symfony/asset-mapper": "To serve the bundled Stimulus controller through the importmap without a Node build; not needed when the application builds its assets with Webpack Encore (see README)"
     },
     "autoload": {
         "psr-4": {
