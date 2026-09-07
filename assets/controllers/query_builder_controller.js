@@ -20,6 +20,15 @@ import { QueryBuilderBootstrap } from "@react-querybuilder/bootstrap";
 import { parseJsonLogic } from "react-querybuilder/parseJsonLogic";
 import("react-querybuilder/dist/query-builder.css");
 
+// The operators offered when the 'operators' form option is not set, before the type filters.
+const defaultOperatorNames = [
+    '=',
+    'null',
+    'contains', 'doesNotContain', 'beginsWith', 'endsWith',
+    '>', '>=', '<', '<=',
+    'in',
+];
+
 /**
  * stimulusFetch: 'lazy'
  */
@@ -41,13 +50,7 @@ export default class extends Controller {
     #fieldsOperators = {};
 
     // List of operators available (by default before filtering).
-    #operators = [
-        '=',
-        'null',
-        'contains', 'doesNotContain', 'beginsWith', 'endsWith',
-        '>', '>=', '<', '<=',
-        'in',
-    ];
+    #operators = defaultOperatorNames;
 
     // Whether the 'operators' form option replaced the default list (custom operators then require an explicit opt-in).
     #operatorsCustomized = false;
@@ -148,16 +151,12 @@ export default class extends Controller {
     // the user typed rather than from the 'conditions' the page was rendered with.
     #query = null;
 
-    // The 'fields' value the editor was mounted with, serialized: an attribute write carrying the
-    // same list is not a change.
-    #mountedFields = null;
+    // The 'fields', 'operators' and 'lang' values the editor was mounted with, serialized: an
+    // attribute write carrying what the editor already has is not a change.
+    #mountedSettings = null;
 
     connect() {
-        if (this.operatorsValue.length > 0) {
-            this.#operators = this.operatorsValue;
-            this.#operatorsCustomized = true;
-        }
-        const fields = this.#buildFields();
+        const fields = this.#readSettings();
         this.#query = this.#getDefaultQuery();
         this.#mount(fields, this.#query);
     }
@@ -166,26 +165,53 @@ export default class extends Controller {
         this.#root = null;
     }
 
-    // Stimulus invokes this once after initialize(), before connect(), when there is no root yet,
-    // and then on every write of the attribute, the same list included. Neither is a reason to
-    // rebuild the editor. A real change rebuilds the field list and remounts the editor with the
-    // query as it currently is, so the rules typed since the page load are kept.
+    // Stimulus invokes these once after initialize(), before connect(), when there is no root yet,
+    // and then on every write of the attribute, the same value included. Neither is a reason to
+    // rebuild the editor. A real change rebuilds the editor from the three values and remounts it
+    // with the query as it currently is, so the rules typed since the page load are kept.
     fieldsValueChanged() {
-        if (!this.#root || this.#serializeFields() === this.#mountedFields) {
+        this.#settingsChanged();
+    }
+    operatorsValueChanged() {
+        this.#settingsChanged();
+    }
+    langValueChanged() {
+        this.#settingsChanged();
+    }
+
+    #settingsChanged() {
+        if (!this.#root || this.#serializeSettings() === this.#mountedSettings) {
             return;
         }
-        const fields = this.#buildFields();
-        const query = this.#pruneQuery(this.#query, new Set(fields.map((field) => field.name)));
+        const fields = this.#readSettings();
+        const query = this.#pruneQuery(this.#query, this.#offeredOperators(fields));
         this.#root.unmount();
         this.#mount(fields, query);
         // The pruned tree goes through the active processor like any edit, so the hidden input
-        // never carries a rule the server would refuse for naming a field absent from 'fields',
-        // and dirty-state trackers see the change.
+        // never carries a rule the server would refuse, for naming a field absent from 'fields'
+        // or an operator its field does not offer, and dirty-state trackers see the change.
         this.#onQueryChange(query);
     }
 
-    #serializeFields() {
-        return JSON.stringify(this.fieldsValue);
+    #serializeSettings() {
+        return JSON.stringify([this.fieldsValue, this.operatorsValue, this.langValue]);
+    }
+
+    // Everything the editor is built from, read again from the current values: the global
+    // operator list, then the field list handed to the library. Records what was read, for
+    // #settingsChanged to tell a change from a rewrite.
+    #readSettings() {
+        this.#applyOperators();
+        const fields = this.#buildFields();
+        this.#mountedSettings = this.#serializeSettings();
+        return fields;
+    }
+
+    // An empty 'operators' value is the option left unset: the defaults come back, custom
+    // operators included.
+    #applyOperators() {
+        this.#operatorsCustomized = this.operatorsValue.length > 0;
+        this.#operators = this.#operatorsCustomized ? this.operatorsValue : defaultOperatorNames;
     }
 
     // The field list handed to the library, sorted by label, and with it the per-field
@@ -207,30 +233,52 @@ export default class extends Controller {
             });
         }
         fields.sort((a, b) => a.label.localeCompare(b.label, this.langValue));
-        this.#mountedFields = this.#serializeFields();
         return fields;
     }
 
-    // Drops the rules on a field the list no longer declares, and a group left empty with them.
-    // Keeping them is worse on both sides: the field select has no option for the vanished field
-    // and shows the first one while the rule still holds the old name, and the server refuses the
-    // tree anyway. A rule with no field picked yet is not on a vanished field and stays; the root
-    // group stays whatever is left in it.
-    #pruneQuery(group, fieldNames) {
+    // The operators offered on each field, as #getOperators hands them to the library, so the
+    // pruning and the select agree on what a rule can hold.
+    #offeredOperators(fields) {
+        const getOperators = this.#getOperators();
+        return new Map(fields.map((field) => [
+            field.name,
+            new Set(getOperators(field.name, { fieldData: field }).map((operator) => operator.name)),
+        ]));
+    }
+
+    // Drops the rules the new values leave nowhere to stand, on a field the list no longer
+    // declares or with an operator its field no longer offers, and a group left empty with them.
+    // Keeping them is worse on both sides: the select has no option for the vanished field or
+    // operator and shows the first one while the rule still holds the old name, and the server
+    // refuses the tree anyway. A rule with no field or no operator picked yet is not one of those
+    // and stays; the root group stays whatever is left in it. A 'valuesList' rule whose field no
+    // longer offers that operator but still offers '=' becomes the equality it is stored as,
+    // which is also how it reopens when 'valuesList' is not active.
+    #pruneQuery(group, offeredOperators) {
         const rules = [];
         for (const rule of group.rules ?? []) {
             if (rule && Array.isArray(rule.rules)) {
-                const nestedGroup = this.#pruneQuery(rule, fieldNames);
+                const nestedGroup = this.#pruneQuery(rule, offeredOperators);
                 if (nestedGroup.rules.length) {
                     rules.push(nestedGroup);
                 }
                 continue;
             }
-            if (rule && 'object' === typeof rule
-                && rule.field !== defaultPlaceholderFieldName && !fieldNames.has(rule.field)) {
+            if (!rule || 'object' !== typeof rule || rule.field === defaultPlaceholderFieldName) {
+                rules.push(rule);
                 continue;
             }
-            rules.push(rule);
+            const offered = offeredOperators.get(rule.field);
+            if (!offered) {
+                continue;
+            }
+            if (rule.operator === defaultPlaceholderOperatorName || offered.has(rule.operator)) {
+                rules.push(rule);
+                continue;
+            }
+            if (rule.operator === 'valuesList' && offered.has('=')) {
+                rules.push({ ...rule, operator: '=' });
+            }
         }
         return { ...group, rules };
     }
