@@ -144,16 +144,59 @@ export default class extends Controller {
 
     static targets = ["queryBuilder", "input"];
 
+    // The query as the editor holds it, tracked from onQueryChange, so a remount starts from what
+    // the user typed rather than from the 'conditions' the page was rendered with.
+    #query = null;
+
+    // The 'fields' value the editor was mounted with, serialized: an attribute write carrying the
+    // same list is not a change.
+    #mountedFields = null;
+
     connect() {
         if (this.operatorsValue.length > 0) {
             this.#operators = this.operatorsValue;
             this.#operatorsCustomized = true;
         }
+        const fields = this.#buildFields();
+        this.#query = this.#getDefaultQuery();
+        this.#mount(fields, this.#query);
+    }
+    disconnect() {
+        this.#root?.unmount();
+        this.#root = null;
+    }
+
+    // Stimulus invokes this once after initialize(), before connect(), when there is no root yet,
+    // and then on every write of the attribute, the same list included. Neither is a reason to
+    // rebuild the editor. A real change rebuilds the field list and remounts the editor with the
+    // query as it currently is, so the rules typed since the page load are kept.
+    fieldsValueChanged() {
+        if (!this.#root || this.#serializeFields() === this.#mountedFields) {
+            return;
+        }
+        const fields = this.#buildFields();
+        const query = this.#pruneQuery(this.#query, new Set(fields.map((field) => field.name)));
+        this.#root.unmount();
+        this.#mount(fields, query);
+        // The pruned tree goes through the active processor like any edit, so the hidden input
+        // never carries a rule the server would refuse for naming a field absent from 'fields',
+        // and dirty-state trackers see the change.
+        this.#onQueryChange(query);
+    }
+
+    #serializeFields() {
+        return JSON.stringify(this.fieldsValue);
+    }
+
+    // The field list handed to the library, sorted by label, and with it the per-field
+    // bookkeeping the processors rely on (dates, numbers, values, operators), rebuilt from the
+    // current 'fields' value.
+    #buildFields() {
         this.#fieldsDate = [];
         this.#fieldsNumber = [];
         this.#fieldsValues = {};
         this.#fieldsOperators = {};
-        let fields = [];
+        const fields = [];
         for (const fieldConfig of this.fieldsValue) {
             this.#setFieldOperators(fieldConfig);
             fields.push({
@@ -164,49 +207,39 @@ export default class extends Controller {
             });
         }
         fields.sort((a, b) => a.label.localeCompare(b.label, this.langValue));
-        const onQueryChange = (query) => {
-            // Handle the native input value: the tree as the editor holds it, nothing to format.
-            // An emptied editor stores the same empty object as the two other processors, so the
-            // server reads "no condition" from one and the same sentinel.
-            if (this.processorValue === 'native') {
-                const nativeTree = this.#toNativeTree(query);
-                this.#updateInputValue(JSON.stringify(nativeTree.rules.length ? nativeTree : {}));
-                return;
-            }
-            let ruleProcessor = this.#getRuleProcessor();
-            const queryFormatted = formatQuery(query, {
-                format: "jsonlogic",
-                ruleProcessor,
-            });
+        this.#mountedFields = this.#serializeFields();
+        return fields;
+    }
 
-            // Handle jsonLogic input value (only jsonLogic tree).
-            // An empty builder formats to false: store an empty object, never the JSON scalar '""',
-            // which the 'conditions' Object value would refuse to parse when the form is
-            // re-rendered after a failed validation, leaving the editor unmounted.
-            if (this.processorValue === 'jsonLogic') {
-                this.#updateInputValue(JSON.stringify(false === queryFormatted ? {} : queryFormatted));
+    // Drops the rules on a field the list no longer declares, and a group left empty with them.
+    // Keeping them is worse on both sides: the field select has no option for the vanished field
+    // and shows the first one while the rule still holds the old name, and the server refuses the
+    // tree anyway. A rule with no field picked yet is not on a vanished field and stays; the root
+    // group stays whatever is left in it.
+    #pruneQuery(group, fieldNames) {
+        const rules = [];
+        for (const rule of group.rules ?? []) {
+            if (rule && Array.isArray(rule.rules)) {
+                const nestedGroup = this.#pruneQuery(rule, fieldNames);
+                if (nestedGroup.rules.length) {
+                    rules.push(nestedGroup);
+                }
+                continue;
             }
-
-            // Handle parameterized SQL input value (keep jsonLogic tree and add SQL and params)
-            if (this.processorValue === 'parameterized') {
-                ruleProcessor = this.#getParameterizedRuleProcessor();
-                const parameterizedQueryFormatted = formatQuery(query, {
-                    format: 'parameterized',
-                    ruleProcessor,
-                });
-                const inputValue = {
-                    // Same normalization as above, so both processors agree on what "empty" is.
-                    conditionTree: false === queryFormatted ? {} : queryFormatted,
-                    parameterizedSql: parameterizedQueryFormatted,
-                };
-                this.#updateInputValue(JSON.stringify(inputValue));
+            if (rule && 'object' === typeof rule
+                && rule.field !== defaultPlaceholderFieldName && !fieldNames.has(rule.field)) {
+                continue;
             }
-        };
+            rules.push(rule);
+        }
+        return { ...group, rules };
+    }
 
-        const queryBuilder = React.createElement(QueryBuilder,{
+    #mount(fields, query) {
+        const queryBuilder = React.createElement(QueryBuilder, {
             fields,
-            onQueryChange,
-            defaultQuery: this.#getDefaultQuery(),
+            onQueryChange: (changedQuery) => this.#onQueryChange(changedQuery),
+            defaultQuery: query,
             combinators: this.#getCombinators(),
             getOperators: this.#getOperators(),
             getValueEditorType: this.#getValueEditorType(),
@@ -227,9 +260,52 @@ export default class extends Controller {
             }),
         );
     }
-    disconnect() {
-        this.#root?.unmount();
-        this.#root = null;
+
+    #onQueryChange(query) {
+        this.#query = query;
+        // Handle the native input value: the tree as the editor holds it, nothing to format.
+        // An emptied editor stores the same empty object as the two other processors, so the
+        // server reads "no condition" from one and the same sentinel.
+        if (this.processorValue === 'native') {
+            const nativeTree = this.#toNativeTree(query);
+            this.#updateInputValue(JSON.stringify(nativeTree.rules.length ? nativeTree : {}));
+            return;
+        }
+        let ruleProcessor = this.#getRuleProcessor();
+        const queryFormatted = formatQuery(query, {
+            format: "jsonlogic",
+            ruleProcessor,
+        });
+
+        // Handle jsonLogic input value (only jsonLogic tree).
+        // An empty builder formats to false: store an empty object, never the JSON scalar '""',
+        // which the 'conditions' Object value would refuse to parse when the form is
+        // re-rendered after a failed validation, leaving the editor unmounted.
+        if (this.processorValue === 'jsonLogic') {
+            this.#updateInputValue(JSON.stringify(false === queryFormatted ? {} : queryFormatted));
+        }
+
+        // Handle parameterized SQL input value (keep jsonLogic tree and add SQL and params)
+        if (this.processorValue === 'parameterized') {
+            ruleProcessor = this.#getParameterizedRuleProcessor();
+            const parameterizedQueryFormatted = formatQuery(query, {
+                format: 'parameterized',
+                ruleProcessor,
+            });
+            // An empty editor stores the same empty object as the two other processors, not a
+            // wrapper around an empty tree and the neutral "(1 = 1)": the server reads null from
+            // either, and the input keeps the value the page was rendered with, so nothing fires
+            // for a form the user has not changed.
+            if (false === queryFormatted) {
+                this.#updateInputValue(JSON.stringify({}));
+                return;
+            }
+            const inputValue = {
+                conditionTree: queryFormatted,
+                parameterizedSql: parameterizedQueryFormatted,
+            };
+            this.#updateInputValue(JSON.stringify(inputValue));
+        }
     }
 
     // Guarded so the initial render does not fire a spurious event (e.g. form dirty trackers).

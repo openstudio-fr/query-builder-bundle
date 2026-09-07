@@ -143,6 +143,20 @@ Two things to know on the data side:
 - The model data is `array|null`: a mapped property must accept both. An empty or cleared builder submits as `null`.
 - The controller fires `input` and `change` events on the hidden input whenever the query changes, so dirty-state trackers see the edits.
 
+#### Changing the fields after render
+
+The controller reads `fields` when it connects. A page where the queryable fields depend on another input of the same form (a context or entity type select, a data source) swaps them by writing the `data-query-builder-fields-value` attribute of the widget's outer `<div>`, the one carrying `data-controller="query-builder"`. From another Stimulus controller, for instance:
+
+```js
+this.editorTarget.dataset.queryBuilderFieldsValue = JSON.stringify(fields);
+```
+
+`fields` is a list with the shape `Field::toArray()` produces (`name`, `type`, `label`, `labelInformation`, `values`, `operators`). A page that knows every possible list in advance renders them once, server side, and picks one on change. The form that handles the submission has to be built with the same list, or the server-side check refuses the tree (see [Security](#security)).
+
+The editor is rebuilt with the new list and the query as it currently is, not as it was at page load: the rules typed since then are kept. Rules on a field the new list no longer declares are dropped, and a group left empty with them. The hidden input is then rewritten through the active processor, with the usual `input` and `change` events, so the form never submits a tree the server would refuse for naming an unknown field. Asking the user to confirm a switch that drops rules is the host's decision, taken before writing the attribute. Writing the attribute with the list the editor already has does nothing.
+
+`operators`, `processor` and `lang` are still read once, when the controller connects.
+
 ### The `fields` option
 
 Each entry describes one field the user can build rules on:
