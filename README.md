@@ -1,6 +1,6 @@
 # Query Builder Bundle
 
-[React Query Builder](https://react-querybuilder.js.org/) packaged as a Symfony form type, served through AssetMapper. Users compose nested and/or condition groups in the browser, with typed fields, drag-and-drop and translated labels. Your application receives the result as a [JsonLogic](https://jsonlogic.com/) tree it can store and evaluate server side. There is no Node build step and no dedicated endpoint: it is one more field in a regular Symfony form.
+[React Query Builder](https://react-querybuilder.js.org/) packaged as a Symfony form type, served through AssetMapper. Users compose nested and/or condition groups in the browser, with typed fields, drag-and-drop and translated labels. Your application receives the result as a [JsonLogic](https://jsonlogic.com/) tree it can store and evaluate server side, or as the editor's own tree when it compiles the rules itself. There is no Node build step and no dedicated endpoint: it is one more field in a regular Symfony form.
 
 The moving parts:
 
@@ -194,11 +194,11 @@ The enum is exhaustive: a `type` outside it throws an `InvalidOptionsException` 
 
 Each operator label in the UI also shows its technical name in parentheses. Behaviors that do not show in the table:
 
-- `in` and `notIn` use a textarea with one value per line.
-- `<=ndays` and `>=ndays` compare the age of a date field in days from today. In parameterized SQL they become `datediff(curdate(), field)` comparisons.
-- On a `Number` field, `null` ("is empty") matches both `NULL` and `0`, in both processors: the tree holds an inclusion in `[null, 0]`, and the SQL fragment is `field is null or field = 0`. `notNull` ("is not empty") is its exact complement — `field is not null and field <> 0` — so a `0` never satisfies both.
+- `in` and `notIn` use a textarea with one value per line. The stored list is comma-separated, whatever the processor.
+- `<=ndays` and `>=ndays` compare the age of a date field in days from today. In parameterized SQL they become `datediff(curdate(), field)` comparisons; the native tree keeps the operator name and the number of days.
+- On a `Number` field, `null` ("is empty") matches both `NULL` and `0`, in the `jsonLogic` and `parameterized` processors: the tree holds an inclusion in `[null, 0]`, and the SQL fragment is `field is null or field = 0`. `notNull` ("is not empty") is its exact complement — `field is not null and field <> 0` — so a `0` never satisfies both. The native tree carries the operator as picked (`null`, `notNull`) and leaves that choice to the application.
 - On a field with `values`, the extra "List of values" operator outputs a plain equality. Reopening the query gives the rule that operator back, and its select, as long as the stored value is still one of the field's declared values — otherwise it comes back as a plain `=`.
-- `regex` and `notRegex` are stored as a delimited pattern (`/typed/iu`, case-insensitive and Unicode), in both processors, because the tree is evaluated as JsonLogic. A slash in the pattern is fine: it is escaped in the stored form, so `^\d+/\d+$` stays one compilable pattern instead of ending at its own slash. Reopening the query undoes all of it, so the editor shows the pattern as it was typed; a value that already reads as one well-formed `/pattern/flags` is taken as delimited by hand and kept as-is, in both directions.
+- `regex` and `notRegex` are stored as a delimited pattern (`/typed/iu`, case-insensitive and Unicode), in the `jsonLogic` and `parameterized` processors, because the tree is evaluated as JsonLogic; the native tree is not, and holds the pattern as typed. A slash in the pattern is fine: it is escaped in the stored form, so `^\d+/\d+$` stays one compilable pattern instead of ending at its own slash. Reopening the query undoes all of it, so the editor shows the pattern as it was typed; a value that already reads as one well-formed `/pattern/flags` is taken as delimited by hand and kept as-is, in both directions.
 - The SQL fragments generated for `regex`, `notRegex` and the `ndays` operators use MySQL/MariaDB functions (`regexp`, `datediff`, `curdate`). The pattern is bound without its delimiters there, as `REGEXP` expects.
 
 ### Operators
@@ -268,6 +268,7 @@ The `processor` option decides what the hidden input carries, and is set with th
 
 - `QueryBuilderProcessor::JsonLogic` (default): the JsonLogic tree only.
 - `QueryBuilderProcessor::Parameterized`: an object holding the JsonLogic tree under `conditionTree` and the parameterized SQL under `parameterizedSql` (see [ParameterizedSQL](https://react-querybuilder.js.org/api/react-querybuilder/interfaces/ParameterizedSQL) in the React Query Builder API).
+- `QueryBuilderProcessor::Native`: the tree as React Query Builder holds it (a [RuleGroupType](https://react-querybuilder.js.org/api/react-querybuilder/interfaces/RuleGroupType)) without the ids the editor adds: groups as `{combinator, not, rules}`, rules as `{field, operator, value}`. Not JsonLogic — the operator names are the editor's own — for an application that compiles the rules itself, see [Saving with the `native` processor](#saving-with-the-native-processor).
 
 ```php
 use OpenStudio\QueryBuilderBundle\Enum\QueryBuilderProcessor;
@@ -279,9 +280,9 @@ $builder->add('conditions', QueryBuilderType::class, [
 ]);
 ```
 
-The backing strings (`jsonLogic`, `parameterized`) are accepted as well and normalized to the enum.
+The backing strings (`jsonLogic`, `parameterized`, `native`) are accepted as well and normalized to the enum.
 
-Both processors agree on what an empty editor means: the field data is `null`, never a tree-shaped value to test for. In `parameterized` mode that also drops the SQL an empty query formats to, which is the neutral `(1 = 1)` — a statement matching every row, and the last thing a segment the user just emptied should carry.
+The three processors agree on what an empty editor means: the field data is `null`, never a tree-shaped value to test for. In `parameterized` mode that also drops the SQL an empty query formats to, which is the neutral `(1 = 1)` — a statement matching every row, and the last thing a segment the user just emptied should carry. In `native` mode a group with no rule left in it is empty as well.
 
 > ⚠️​ **Warning**: both parts are built in the browser and reach the server as untrusted input. Anyone can submit arbitrary SQL in `parameterizedSql`: never execute it as-is, treat it as a preview or debugging aid. `conditionTree` travels through the same hidden input; the type checks it against your `fields` and `operators`, but turning it into a query safely is still on you — see [Security](#security).
 
@@ -425,9 +426,36 @@ For the same query, the submitted value looks like this:
 }
 ```
 
+### Saving with the `native` processor
+
+The mapped property receives the tree as React Query Builder holds it, for an application that turns the rules into a query itself — a dictionary mapping field names to columns, a whitelist of operators, values bound as parameters:
+
+```php
+->add('conditions', QueryBuilderType::class, [
+    'processor' => QueryBuilderProcessor::Native,
+    'fields' => [/* same fields as above */],
+])
+```
+
+For the same query, the stored value is:
+
+```json
+{
+    "combinator": "and",
+    "rules": [
+        {"field": "status", "operator": "=", "value": "active"},
+        {"field": "email", "operator": "contains", "value": "@example.com"}
+    ]
+}
+```
+
+A nested group is a rule holding `rules` of its own, with its `combinator` and, when the group is negated, `"not": true`. The ids and paths the editor keeps for itself are not stored. Three things differ from what the editor displays, and are undone when the query reopens: a "List of values" rule is stored as `=`, an `in`/`notIn` list is comma-separated, and a rule left without a field or an operator is left out, as is a group left without rules.
+
+The operator names are those of the `Operator` enum, and the values are what the inputs hold: strings, `true`/`false` for a `Boolean` field, a comma-separated pair for `between`. Nothing is rewritten for evaluation — `regex` holds the pattern as typed, `null` on a `Number` field is the operator alone — so the section below does not apply: the tree is not JsonLogic.
+
 ### Evaluating a saved tree
 
-The stored value is JsonLogic, but not only standard JsonLogic: seven operations come from react-querybuilder or from this bundle, and a plain evaluator raises `Unrecognized operation` on them. Register them before calling `apply()`.
+With the `jsonLogic` and `parameterized` processors, the stored value is JsonLogic, but not only standard JsonLogic: seven operations come from react-querybuilder or from this bundle, and a plain evaluator raises `Unrecognized operation` on them. Register them before calling `apply()`.
 
 | Operation  | Emitted for                   | Arguments, once `var` references are resolved | Meaning                                                    |
 |------------|-------------------------------|-----------------------------------------------|------------------------------------------------------------|
@@ -480,9 +508,11 @@ On top of that, the type checks every submitted tree against the options you dec
 - an operation key is not one the declared `operators` can produce;
 - a field reference carries anything besides its `var` key, which would smuggle an unchecked operation past the walk.
 
+A tree from the `native` processor is checked rule by rule instead, and refused when a group's `combinator` is not `and` or `or`, its `not` is not a boolean, its `rules` is not a list, or a rule's `field` is not a declared name or its `operator` not one of the declared operators (`valuesList` counting as the `=` it is stored as).
+
 A refused tree becomes a regular form error — `The submitted query is invalid.` — and **never reaches your model**: the validation runs in the model transformer, so `$form->getData()` stays `null`. The message shown to the user never echoes the submitted payload back; the precise reason travels in the exception, server side.
 
-The whitelist of operations is derived from the `operators` option through `Operator::jsonLogicOperations()`, which maps each operator to the JsonLogic keys the editor emits for it (`beginsWith` to `startsWith`, `contains` to `in`, `between` to a three-argument `<=`, `valuesList` to an equality, and the bundle's own `regex`, `notRegex`, `<=ndays`, `>=ndays`, plus `notNull` on a number field). Leaving `operators` at `null` allows the keys of every operator; restricting the option restricts the trees the server accepts as well.
+The whitelist of operations is derived from the `operators` option through `Operator::jsonLogicOperations()`, which maps each operator to the JsonLogic keys the editor emits for it (`beginsWith` to `startsWith`, `contains` to `in`, `between` to a three-argument `<=`, `valuesList` to an equality, and the bundle's own `regex`, `notRegex`, `<=ndays`, `>=ndays`, plus `notNull` on a number field), and for a native tree through `Operator::nativeOperator()`. Leaving `operators` at `null` allows the keys of every operator; restricting the option restricts the trees the server accepts as well.
 
 Turn it off with:
 
@@ -513,7 +543,7 @@ $validator = new ConditionTreeValidator(['email', 'total_orders'], Operator::cas
 $validator->assertValid($segment->getConditions());
 ```
 
-`ConditionTreeValidator::assertValid()` accepts both payload shapes (a bare tree, or the `{conditionTree, parameterizedSql}` object of the `parameterized` processor) and throws `ConditionTreeValidationException`.
+`ConditionTreeValidator::assertValid()` accepts the three payload shapes (a JsonLogic tree, the `{conditionTree, parameterizedSql}` object of the `parameterized` processor, or the group of the `native` processor) and throws `ConditionTreeValidationException`.
 
 ## Development
 

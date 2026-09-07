@@ -74,4 +74,19 @@ enum Operator: string
             self::GreaterThanOrEqualNDays => ['>=ndays'],
         };
     }
+
+    /**
+     * The operator name a rule holds in the tree of the "native" processor.
+     *
+     * The editor's own name, with one exception: "valuesList" is stored as the equality it stands
+     * for, as the two other processors already do, so a consumer compiling the tree never meets an
+     * operator that only exists in this editor.
+     */
+    public function nativeOperator(): string
+    {
+        return match ($this) {
+            self::ValuesList => self::Equal->value,
+            default => $this->value,
+        };
+    }
 }

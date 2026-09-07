@@ -6,7 +6,15 @@ import { QueryBuilderDnD } from '@react-querybuilder/dnd';
 import * as ReactDnD from 'react-dnd';
 import * as ReactDndHtml5Backend from 'react-dnd-html5-backend';
 import * as ReactDndTouchBackend from 'react-dnd-touch-backend';
-import { defaultCombinators, defaultOperators, defaultRuleProcessorJsonLogic, defaultRuleProcessorParameterized, defaultTranslations } from "react-querybuilder";
+import {
+    defaultCombinators,
+    defaultOperators,
+    defaultPlaceholderFieldName,
+    defaultPlaceholderOperatorName,
+    defaultRuleProcessorJsonLogic,
+    defaultRuleProcessorParameterized,
+    defaultTranslations,
+} from "react-querybuilder";
 import { formatQuery, QueryBuilder } from "react-querybuilder";
 import { QueryBuilderBootstrap } from "@react-querybuilder/bootstrap";
 import { parseJsonLogic } from "react-querybuilder/parseJsonLogic";
@@ -150,6 +158,14 @@ export default class extends Controller {
         }
         fields.sort((a, b) => a.label.localeCompare(b.label, this.langValue));
         const onQueryChange = (query) => {
+            // Handle the native input value: the tree as the editor holds it, nothing to format.
+            // An emptied editor stores the same empty object as the two other processors, so the
+            // server reads "no condition" from one and the same sentinel.
+            if (this.processorValue === 'native') {
+                const nativeTree = this.#toNativeTree(query);
+                this.#updateInputValue(JSON.stringify(nativeTree.rules.length ? nativeTree : {}));
+                return;
+            }
             let ruleProcessor = this.#getRuleProcessor();
             const queryFormatted = formatQuery(query, {
                 format: "jsonlogic",
@@ -392,10 +408,11 @@ export default class extends Controller {
                 return { ['==']: [{ var: rule.field }, rule.value]};
             }
             // Handle 'regex' and 'notRegex' operators. The tree always carries a delimited pattern,
-            // in both processors: it is JsonLogic, evaluated by the 'regex' operation this bundle
-            // ships, and a bare pattern makes preg_match fail. The SQL parameter is built from the
-            // raw value by the parameterized processor, which is where MySQL's delimiter-less
-            // REGEXP is served.
+            // in the jsonLogic and parameterized processors: it is JsonLogic, evaluated by the
+            // 'regex' operation this bundle ships, and a bare pattern makes preg_match fail. The SQL
+            // parameter is built from the raw value by the parameterized processor, which is where
+            // MySQL's delimiter-less REGEXP is served, and the native processor stores the raw
+            // value too.
             if (['regex', 'notRegex'].includes(rule.operator)) {
                 return {[rule.operator]: [{ var: rule.field }, this.#delimitRegexPattern(rule.value)]};
             }
@@ -547,6 +564,60 @@ export default class extends Controller {
         };
     }
 
+    // The tree as the editor holds it, without the keys the library adds for its own bookkeeping
+    // (ids, paths), so what is stored is what react-querybuilder documents: a group is
+    // {combinator, not, rules}, a rule {field, operator, value}. Two things are left out, as
+    // formatQuery does for the two other processors: a rule without a field or an operator picked
+    // yet, which could not pass the server-side check and is not a reason to refuse the rules the
+    // user did complete, and a group left without rules, which means nothing and, compiled
+    // naively, is a clause that is always true — inside an 'or', every row.
+    #toNativeTree(group) {
+        const rules = [];
+        for (const rule of group.rules ?? []) {
+            // The string of an independent combinator, never emitted by this editor.
+            if (!rule || 'object' !== typeof rule) {
+                continue;
+            }
+            if (Array.isArray(rule.rules)) {
+                const nestedGroup = this.#toNativeTree(rule);
+                if (nestedGroup.rules.length) {
+                    rules.push(nestedGroup);
+                }
+                continue;
+            }
+            if (rule.field === defaultPlaceholderFieldName || rule.operator === defaultPlaceholderOperatorName) {
+                continue;
+            }
+            rules.push(this.#toNativeRule(rule));
+        }
+        return {
+            combinator: group.combinator,
+            ...(group.not ? { not: true } : {}),
+            rules,
+        };
+    }
+    // Same folds as the two other processors, so a stored rule reads the same whatever the
+    // processor, and #restoreReopenedRules undoes them the same way when the form reopens.
+    #toNativeRule(rule) {
+        // 'valuesList' is stored as the equality it stands for.
+        if (rule.operator === 'valuesList') {
+            return { field: rule.field, operator: '=', value: rule.value };
+        }
+        let value = rule.value;
+        // Same guards as the jsonLogic processor on a date field: a date left half-typed, or a
+        // date string still held by a rule switched to an 'ndays' operator, is stored empty.
+        if (['<=ndays', '>=ndays'].includes(rule.operator)) {
+            value = isNaN(value) ? '' : value;
+        } else if (this.#fieldsDate.includes(rule.field)) {
+            value = this.#normalizeDateValue(rule);
+        }
+        // Newlines to commas for the 'in' and 'notIn' textareas: the stored list is
+        // comma-separated, as the library splits it, whatever the processor.
+        if (['in', 'notIn'].includes(rule.operator) && 'string' === typeof value) {
+            value = value.replaceAll(/\n/g, ',');
+        }
+        return { field: rule.field, operator: rule.operator, value };
+    }
     #getDefaultQuery() {
         const isNullValueNumber = (value) => Array.isArray(value) && value.length === 2 && [null, 0].every(v => value.includes(v));
         const getFieldInOperation = (val) => {
@@ -583,6 +654,13 @@ export default class extends Controller {
             ? this.conditionsValue
             : {};
         const conditionTree = 'conditionTree' in conditions ? conditions.conditionTree : conditions;
+        // A 'rules' key is the group of the native processor, reopened as it was stored; the two
+        // other shapes are JsonLogic, parsed back into one. Told apart on the stored value rather
+        // than on the processor option, so a query saved under one processor reopens under another
+        // and is rewritten in the new format on the next save.
+        if (null !== conditionTree && 'object' === typeof conditionTree && Array.isArray(conditionTree.rules)) {
+            return this.#restoreReopenedRules(conditionTree);
+        }
         return this.#restoreReopenedRules(parseJsonLogic(conditionTree, {
             jsonLogicOperations: {
                 in: (val) => ({
@@ -666,9 +744,10 @@ export default class extends Controller {
     // Undoes what saving folded into the tree, rule by rule. 'valuesList' is stored as a plain
     // equality, so the library reopens it as '=' with a text input, losing the select the value
     // was picked in — the equality means the same thing either way, and when the field declares
-    // that very value among its own, the select is the right editor. A 'notIn' list is stored
-    // with the textarea's newlines folded into commas, so they are folded back, as the 'in'
-    // parse handler already does for its own operator.
+    // that very value among its own, the select is the right editor. An 'in' or 'notIn' list is
+    // stored with the textarea's newlines folded into commas, so they are folded back (the
+    // JsonLogic parse handler of 'in' already joins its list with newlines, which this leaves
+    // untouched; the native tree and the JsonLogic 'notIn' hold the comma-separated string).
     #restoreReopenedRules(query) {
         if (!query || !Array.isArray(query.rules)) {
             return query;
@@ -681,7 +760,7 @@ export default class extends Controller {
                 if (rule && Array.isArray(rule.rules)) {
                     return this.#restoreReopenedRules(rule);
                 }
-                if (rule && 'notIn' === rule.operator && 'string' === typeof rule.value) {
+                if (rule && ['in', 'notIn'].includes(rule.operator) && 'string' === typeof rule.value) {
                     return { ...rule, value: rule.value.replaceAll(',', '\n') };
                 }
                 if (rule && '=' === rule.operator
