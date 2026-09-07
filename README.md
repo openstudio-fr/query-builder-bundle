@@ -104,7 +104,7 @@ Render it like any other field (`form_row(form.conditions)`). The type registers
 | Option                     | Type                              | Default                            | Purpose                                                     |
 |----------------------------|-----------------------------------|------------------------------------|-------------------------------------------------------------|
 | `fields`                   | `Field[]` or plain arrays         | `[]`                               | The fields the user can build rules on                      |
-| `operators`                | `Operator[]` or strings           | `null`                             | The operators offered in the rule editor                    |
+| `operators`                | `Operator[]` or strings           | `null`                             | The operators offered in the rule editor, on the fields without a list of their own |
 | `processor`                | `QueryBuilderProcessor` or string | `QueryBuilderProcessor::JsonLogic` | What the submitted value carries                            |
 | `lang`                     | string                            | `%kernel.default_locale%`          | Language of the editor labels                               |
 | `validate_condition_tree`  | bool                              | `true`                             | Refuse a submitted tree that steps outside the two options above (see [Security](#security)) |
@@ -127,6 +127,7 @@ new Field(
     label: 'Creation date',      // shown in the field select, defaults to the name
     labelInformation: 'UTC',     // appended to the label in parentheses
     values: null,                // fixed list of FieldOption, see below
+    operators: null,             // its own list of operators, see Per-field operators below
 );
 ```
 
@@ -136,7 +137,7 @@ Plain arrays with the same keys are accepted and normalized to the DTO:
 ['name' => 'created_at', 'type' => 'date', 'label' => 'Creation date']
 ```
 
-The option is validated when the form is built: a missing or empty `name`, a duplicated `name` or an unknown `type` throws an `InvalidOptionsException`. In the editor, the fields are sorted alphabetically by label.
+The option is validated when the form is built: a missing or empty `name`, a duplicated `name`, an unknown `type` or an invalid `operators` list (see [Per-field operators](#per-field-operators)) throws an `InvalidOptionsException`. In the editor, the fields are sorted alphabetically by label.
 
 #### The `Field.values`
 
@@ -249,7 +250,7 @@ The full list:
 Three rules to keep in mind:
 
 - The list is exhaustive: an operator left out is not offered, the automatic ones included. A field with `values` keeps its "List of values" operator only when `Operator::ValuesList` is listed, and text fields keep `regex`/`notRegex` only when listed.
-- Field type compatibility still applies: `<`, `>`, `<=`, `>=` stay on `Number` and `Date` fields, `contains`, `doesNotContain`, `beginsWith`, `endsWith` and `in` on `Text` fields, `<=ndays`/`>=ndays` on `Date` fields, `valuesList` on fields with `values`. Listing an operator never forces it onto an incompatible field.
+- Field type compatibility still applies: `<`, `>`, `<=`, `>=` stay on `Number` and `Date` fields, `contains`, `doesNotContain`, `beginsWith`, `endsWith` and `in` on `Text` fields, `<=ndays`/`>=ndays` on `Date` fields, `valuesList` on fields with `values`. Listing an operator never forces it onto an incompatible field. A field with a list of its own is the exception, see below.
 - The order of the list is the display order in the operator select.
 
 A status field defined with `values` thus offers exactly two operators, "List of values" first, with:
@@ -261,6 +262,22 @@ A status field defined with `values` thus offers exactly two operators, "List of
 The option also unlocks operators that belong to no default set: `Operator::NotEqual` (`!=`), `Operator::NotIn` (`notIn`), `Operator::NotNull` (`notNull`), `Operator::Between` and `Operator::NotBetween` (both expect two values separated by a comma, in a single input).
 
 An empty list, a duplicated operator, an unknown string or an entry that is neither an `Operator` nor a string throws an `InvalidOptionsException` when the form is built.
+
+#### Per-field operators
+
+The option is one list for the whole widget; from one field to the next, only the `ValueType` makes a difference. A field that needs its own set declares it with `Field.operators`:
+
+```php
+new Field(
+    name: 'total_orders',
+    type: ValueType::Number,
+    operators: [Operator::Equal, Operator::In, Operator::NotIn],
+),
+```
+
+The array shape takes it as well, as enum cases or backing strings: `'operators' => ['=', 'in', 'notIn']`. The list follows the rules of the option: an empty list, a repeated or an unknown operator throws an `InvalidOptionsException` when the form is built.
+
+When set, the list is the exhaustive, ordered set of operators for that field and replaces the global list there, whether the option is `null` or not. It is taken as written: the operators were named for this very field, so the type compatibility rules above do not filter it — which is what lets a `Number` field offer `in` and `notIn`, or a `Text` field do without `regex`. The value editor still follows the operator (a textarea for `in`/`notIn`, a select for `valuesList`, a number input for the `ndays` operators), and `valuesList` is still only offered when the field declares `values`. Fields without the property behave as before, and the server-side check follows the same split (see [Security](#security)).
 
 ### Processor
 
@@ -505,14 +522,17 @@ Whatever the options, a payload that is valid JSON but not a query object — a 
 On top of that, the type checks every submitted tree against the options you declared, and refuses it when:
 
 - a `{"var": "..."}` names a field absent from the `fields` option, or is not a string;
-- an operation key is not one the declared `operators` can produce;
+- an operation key is not one the declared operators can produce — those of the `operators` option, or of a field's own `operators` list;
+- an operation is applied to a field whose operators do not produce it: the field's own list when it has one, the `operators` option otherwise, so a list declared on one field opens nothing to another;
 - a field reference carries anything besides its `var` key, which would smuggle an unchecked operation past the walk.
 
-A tree from the `native` processor is checked rule by rule instead, and refused when a group's `combinator` is not `and` or `or`, its `not` is not a boolean, its `rules` is not a list, or a rule's `field` is not a declared name or its `operator` not one of the declared operators (`valuesList` counting as the `=` it is stored as).
+A tree from the `native` processor is checked rule by rule instead, and refused when a group's `combinator` is not `and` or `or`, its `not` is not a boolean, its `rules` is not a list, or a rule's `field` is not a declared name or its `operator` not one of the operators declared for that field — its own list, or the `operators` option (`valuesList` counting as the `=` it is stored as).
 
 A refused tree becomes a regular form error — `The submitted query is invalid.` — and **never reaches your model**: the validation runs in the model transformer, so `$form->getData()` stays `null`. The message shown to the user never echoes the submitted payload back; the precise reason travels in the exception, server side.
 
 The whitelist of operations is derived from the `operators` option through `Operator::jsonLogicOperations()`, which maps each operator to the JsonLogic keys the editor emits for it (`beginsWith` to `startsWith`, `contains` to `in`, `between` to a three-argument `<=`, `valuesList` to an equality, and the bundle's own `regex`, `notRegex`, `<=ndays`, `>=ndays`, plus `notNull` on a number field), and for a native tree through `Operator::nativeOperator()`. Leaving `operators` at `null` allows the keys of every operator; restricting the option restricts the trees the server accepts as well.
+
+A field with its own `operators` widens that whitelist with what its list produces, so an operator the option leaves out is not refused on the field that declares it — and the field is held to that list alone: a `<` on a field restricted to `=`, `in` and `notIn` is refused where the same tree on an unrestricted `Number` field passes. The check keeps the granularity of the operation key: `contains` and `in` both produce an `in`, so a field allowing one accepts the other.
 
 Turn it off with:
 
@@ -543,7 +563,7 @@ $validator = new ConditionTreeValidator(['email', 'total_orders'], Operator::cas
 $validator->assertValid($segment->getConditions());
 ```
 
-`ConditionTreeValidator::assertValid()` accepts the three payload shapes (a JsonLogic tree, the `{conditionTree, parameterizedSql}` object of the `parameterized` processor, or the group of the `native` processor) and throws `ConditionTreeValidationException`.
+`ConditionTreeValidator::assertValid()` accepts the three payload shapes (a JsonLogic tree, the `{conditionTree, parameterizedSql}` object of the `parameterized` processor, or the group of the `native` processor) and throws `ConditionTreeValidationException`. The constructor takes the declared field names, the operators of the option (every case when it is `null`) and, as an optional third argument, the per-field lists as a map of field name to operators: `['total_orders' => [Operator::Equal, Operator::In, Operator::NotIn]]`.
 
 ## Development
 

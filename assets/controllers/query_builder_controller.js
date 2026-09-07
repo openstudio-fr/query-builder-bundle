@@ -35,6 +35,11 @@ export default class extends Controller {
     // Values declared per field, to reopen a stored equality as the 'valuesList' operator it was.
     #fieldsValues = {};
 
+    // Operators declared per field, offered in place of the global list. Kept out of the field
+    // object handed to the library: it reads fieldData.operators before asking getOperators, where
+    // the labels, the translations and the custom operators are handled.
+    #fieldsOperators = {};
+
     // List of operators available (by default before filtering).
     #operators = [
         '=',
@@ -147,8 +152,10 @@ export default class extends Controller {
         this.#fieldsDate = [];
         this.#fieldsNumber = [];
         this.#fieldsValues = {};
+        this.#fieldsOperators = {};
         let fields = [];
         for (const fieldConfig of this.fieldsValue) {
+            this.#setFieldOperators(fieldConfig);
             fields.push({
                 name: fieldConfig.name,
                 label: this.#makeFieldLabel(fieldConfig),
@@ -300,6 +307,13 @@ export default class extends Controller {
         this.#fieldsValues[fieldConfig.name] = values.map((value) => value.name);
         return { values };
     }
+    #setFieldOperators(fieldConfig) {
+        // The form refuses an empty list; this only covers a controller fed by hand.
+        if (!fieldConfig.operators?.length) {
+            return;
+        }
+        this.#fieldsOperators[fieldConfig.name] = fieldConfig.operators;
+    }
 
     #getCombinators() {
         return defaultCombinators.map(combinator => {
@@ -315,6 +329,11 @@ export default class extends Controller {
 
     #getOperators() {
         return (fieldName, { fieldData }) => {
+            // A field with its own list gets it as written: exhaustive, in that order, and free of
+            // the type filters below — the developer named these operators for this very field.
+            if (this.#fieldsOperators[fieldName]) {
+                return this.#makeFieldOperators(this.#fieldsOperators[fieldName], fieldData);
+            }
             let operators = defaultOperators.filter(
                 (op) => this.#operators.includes(op.name)
             );
@@ -367,9 +386,30 @@ export default class extends Controller {
         };
     }
 
+    // The library's own operators keep their definition, the custom ones are built as the global
+    // list builds them. 'valuesList' still needs the field's values: a select with nothing to pick
+    // is not an operator the user can complete.
+    #makeFieldOperators(names, fieldData) {
+        const operators = [];
+        for (const name of names) {
+            if (name === 'valuesList' && !fieldData.values?.length) {
+                continue;
+            }
+            const defaultOperator = defaultOperators.find((op) => op.name === name);
+            operators.push(defaultOperator
+                ? { ...defaultOperator, label: this.#makeOperatorLabel(name, defaultOperator.label) }
+                : { name, label: this.#makeOperatorLabel(name), value: name });
+        }
+        return operators;
+    }
+
     // Custom operators (regex, notRegex, ndays, valuesList) are active by default;
-    // once the 'operators' form option is set, they must be listed there.
-    #isOperatorActive(name) {
+    // once the 'operators' form option is set, they must be listed there. A field with its own
+    // list answers for itself, whatever the option says.
+    #isOperatorActive(name, fieldName = null) {
+        if (fieldName && this.#fieldsOperators[fieldName]) {
+            return this.#fieldsOperators[fieldName].includes(name);
+        }
         return !this.#operatorsCustomized || this.#operators.includes(name);
     }
 
@@ -764,7 +804,7 @@ export default class extends Controller {
                     return { ...rule, value: rule.value.replaceAll(',', '\n') };
                 }
                 if (rule && '=' === rule.operator
-                    && this.#isOperatorActive('valuesList')
+                    && this.#isOperatorActive('valuesList', rule.field)
                     && (this.#fieldsValues[rule.field] ?? []).includes(rule.value)) {
                     return { ...rule, operator: 'valuesList' };
                 }
