@@ -45,7 +45,7 @@ return [
 
 ### Assets
 
-The bundle ships one Stimulus controller, `query-builder`, which mounts the React editor. The libraries it needs (React 19, React Query Builder 8.14 with its Bootstrap and drag-and-drop packages, React DnD with its HTML5 and touch backends) are declared as peer dependencies in [assets/package.json](assets/package.json). The application loads the controller with AssetMapper or with Webpack Encore. The bundle requires neither, so install the one you use.
+The bundle ships one Stimulus controller, `query-builder`, which mounts the React editor. The libraries it needs (React 19, React Query Builder 8.23 with its Bootstrap and drag-and-drop packages, React DnD with its HTML5 and touch backends) are declared as peer dependencies in [assets/package.json](assets/package.json). The application loads the controller with AssetMapper or with Webpack Encore. The bundle requires neither, so install the one you use.
 
 #### With AssetMapper
 
