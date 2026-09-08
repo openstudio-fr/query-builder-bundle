@@ -115,14 +115,25 @@ class QueryBuilderType extends AbstractType
         Assert::isArray($fields);
         Assert::allIsInstanceOf($fields, Field::class);
 
-        // A null "operators" option means the editor offers every operator it knows.
+        // A null "operators" option leaves the editor its default sets, and the server accepts
+        // every operator it knows.
         $operators = $options['operators'] ?? Operator::cases();
         Assert::isArray($operators);
         Assert::allIsInstanceOf($operators, Operator::class);
 
+        // A field with its own list is held to it, and may name operators the option leaves out.
+        $fieldOperators = [];
+
+        foreach ($fields as $field) {
+            if (null !== $field->operators) {
+                $fieldOperators[$field->name] = $field->operators;
+            }
+        }
+
         return new ConditionTreeValidator(
             array_values(array_map(static fn (Field $field): string => $field->name, $fields)),
             array_values($operators),
+            $fieldOperators,
         );
     }
 }

@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace OpenStudio\QueryBuilderBundle\Service;
 
 use OpenStudio\QueryBuilderBundle\Contract\Exception\FieldNormalizationException;
+use OpenStudio\QueryBuilderBundle\Contract\Exception\OperatorListNormalizationException;
 use OpenStudio\QueryBuilderBundle\Dto\Field;
 use OpenStudio\QueryBuilderBundle\Dto\FieldOption;
+use OpenStudio\QueryBuilderBundle\Enum\Operator;
 use OpenStudio\QueryBuilderBundle\Enum\ValueType;
 
 /**
@@ -17,10 +19,16 @@ use OpenStudio\QueryBuilderBundle\Enum\ValueType;
  *     label?: string|null,
  *     labelInformation?: string|null,
  *     values?: array<int|string, FieldOption|FieldOptionShape|string>|null,
+ *     operators?: array<Operator|string>|null,
  * }
  */
 final readonly class FieldNormalizer
 {
+    public function __construct(
+        private OperatorListNormalizer $operatorListNormalizer,
+    ) {
+    }
+
     /**
      * @param Field|FieldShape $field
      *
@@ -29,7 +37,7 @@ final readonly class FieldNormalizer
     public function __invoke(Field|array $field): Field
     {
         if ($field instanceof Field) {
-            return $field;
+            return $this->withNormalizedOperators($field);
         }
 
         if (!isset($field['name'])) {
@@ -42,7 +50,58 @@ final readonly class FieldNormalizer
             label: $this->assertNullableString($field['label'] ?? null, '"label"'),
             labelInformation: $this->assertNullableString($field['labelInformation'] ?? null, '"labelInformation"'),
             values: $this->normalizeValues($field['values'] ?? null),
+            operators: $this->normalizeOperators($field['operators'] ?? null),
         );
+    }
+
+    /**
+     * A Field built by hand is taken as is, except for its operators, which go through the same
+     * checks as those of the array shape: given as backing strings, they become enum cases.
+     *
+     * @throws FieldNormalizationException
+     */
+    private function withNormalizedOperators(Field $field): Field
+    {
+        if (null === $field->operators) {
+            return $field;
+        }
+
+        $operators = $this->normalizeOperators($field->operators);
+
+        if ($operators === $field->operators) {
+            return $field;
+        }
+
+        return new Field(
+            name: $field->name,
+            type: $field->type,
+            label: $field->label,
+            labelInformation: $field->labelInformation,
+            values: $field->values,
+            operators: $operators,
+        );
+    }
+
+    /**
+     * @return non-empty-list<Operator>|null
+     *
+     * @throws FieldNormalizationException
+     */
+    private function normalizeOperators(mixed $operators): ?array
+    {
+        if (null === $operators) {
+            return null;
+        }
+
+        if (!is_array($operators)) {
+            throw new FieldNormalizationException(sprintf('"operators" is not an array ("%s" given).', get_debug_type($operators)));
+        }
+
+        try {
+            return ($this->operatorListNormalizer)($operators);
+        } catch (OperatorListNormalizationException $exception) {
+            throw new FieldNormalizationException('"operators" '.$exception->getMessage(), $exception->getCode(), $exception);
+        }
     }
 
     /**

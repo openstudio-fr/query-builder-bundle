@@ -41,7 +41,8 @@ final readonly class JsonDataTransformer implements DataTransformerInterface
             throw new TransformationFailedException('Invalid JSON.', 0, $exception);
         }
 
-        // The widget submits a JsonLogic object, or the wrapper of the "parameterized" processor.
+        // The widget submits a JsonLogic object, the wrapper of the "parameterized" processor, or
+        // the react-querybuilder group of the "native" one.
         // Anything else is valid JSON but not a query: a scalar ("42", "\"abc\"") would reach the
         // model and fail in the property setter, which is a 500 for what is only an invalid
         // submission, and a list ("[1,2]") is no tree either — a tree is always keyed by its
@@ -51,10 +52,11 @@ final readonly class JsonDataTransformer implements DataTransformerInterface
         }
 
         // The "parameterized" processor wraps the tree next to the SQL, so an emptied editor
-        // arrives as a wrapper the sentinels above cannot recognize, where the other processor
+        // arrives as a wrapper the sentinels above cannot recognize, where the "jsonLogic" processor
         // sends a plain "{}" that already becomes null. Both mean "no condition", and the SQL that
         // comes with an empty tree is the neutral "(1 = 1)": persisting it would leave the
-        // application a statement matching every single row.
+        // application a statement matching every single row. The "native" processor sends "{}" as
+        // well, but a group emptied of its rules is the same "no condition" if a client builds it.
         if ($this->isEmptyConditionTree($decoded)) {
             return null;
         }
@@ -86,12 +88,20 @@ final readonly class JsonDataTransformer implements DataTransformerInterface
 
     /**
      * A wrapper whose tree is absent, empty, or not a tree at all ("false" for an editor emptied
-     * before that was normalized to an empty object).
+     * before that was normalized to an empty object), or a native group with no rule left in it.
      *
      * @param array<array-key, mixed> $decoded
      */
     private function isEmptyConditionTree(array $decoded): bool
     {
+        // A "rules" key is the native group: a JsonLogic tree is keyed by its operations and the
+        // wrapper by its two parts, neither has one.
+        if (array_key_exists('rules', $decoded)) {
+            $rules = $decoded['rules'];
+
+            return !is_array($rules) || [] === $rules;
+        }
+
         if (!array_key_exists('conditionTree', $decoded) && !array_key_exists('parameterizedSql', $decoded)) {
             return false;
         }

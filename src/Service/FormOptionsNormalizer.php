@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OpenStudio\QueryBuilderBundle\Service;
 
 use OpenStudio\QueryBuilderBundle\Contract\Exception\FieldNormalizationException;
+use OpenStudio\QueryBuilderBundle\Contract\Exception\OperatorListNormalizationException;
 use OpenStudio\QueryBuilderBundle\Dto\Field;
 use OpenStudio\QueryBuilderBundle\Enum\Operator;
 use OpenStudio\QueryBuilderBundle\Enum\QueryBuilderProcessor;
@@ -18,6 +19,7 @@ final readonly class FormOptionsNormalizer
 {
     public function __construct(
         private FieldNormalizer $fieldNormalizer,
+        private OperatorListNormalizer $operatorListNormalizer,
     ) {
     }
 
@@ -67,7 +69,6 @@ final readonly class FormOptionsNormalizer
      * @throws InvalidOptionsException
      *
      * @psalm-suppress TooManyTemplateParams
-     * @psalm-suppress DocblockTypeContradiction The "operators" option also allows plain arrays, so entries are checked at runtime.
      */
     public function normalizeOperators(Options $options, ?array $operators): ?array
     {
@@ -75,31 +76,11 @@ final readonly class FormOptionsNormalizer
             return null;
         }
 
-        if ([] === $operators) {
-            throw new InvalidOptionsException('The option "operators" must be null or a non-empty list of operators.');
+        try {
+            return ($this->operatorListNormalizer)($operators);
+        } catch (OperatorListNormalizationException $exception) {
+            throw new InvalidOptionsException('The option "operators" '.$exception->getMessage(), $exception->getCode(), $exception);
         }
-
-        $accepted = implode('", "', Operator::values());
-        $operatorsNormalized = [];
-
-        foreach ($operators as $operator) {
-            if (!$operator instanceof Operator && !is_string($operator)) {
-                throw new InvalidOptionsException(sprintf('The option "operators" contains an entry of type "%s"; expected "%s" or string.', get_debug_type($operator), Operator::class));
-            }
-
-            if (is_string($operator)) {
-                $operator = Operator::tryFrom($operator)
-                    ?? throw new InvalidOptionsException(sprintf('The option "operators" contains the value "%s", which is invalid. Accepted values are: "%s".', $operator, $accepted));
-            }
-
-            if (in_array($operator, $operatorsNormalized, true)) {
-                throw new InvalidOptionsException(sprintf('The option "operators" contains the operator "%s" more than once.', $operator->value));
-            }
-
-            $operatorsNormalized[] = $operator;
-        }
-
-        return $operatorsNormalized;
     }
 
     /**

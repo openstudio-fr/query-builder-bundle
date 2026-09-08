@@ -6,11 +6,29 @@ import { QueryBuilderDnD } from '@react-querybuilder/dnd';
 import * as ReactDnD from 'react-dnd';
 import * as ReactDndHtml5Backend from 'react-dnd-html5-backend';
 import * as ReactDndTouchBackend from 'react-dnd-touch-backend';
-import { defaultCombinators, defaultOperators, defaultRuleProcessorJsonLogic, defaultRuleProcessorParameterized, defaultTranslations } from "react-querybuilder";
+import {
+    defaultCombinators,
+    defaultOperators,
+    defaultPlaceholderFieldName,
+    defaultPlaceholderOperatorName,
+    defaultPlaceholderValueName,
+    defaultRuleProcessorJsonLogic,
+    defaultRuleProcessorParameterized,
+    defaultTranslations,
+} from "react-querybuilder";
 import { formatQuery, QueryBuilder } from "react-querybuilder";
 import { QueryBuilderBootstrap } from "@react-querybuilder/bootstrap";
 import { parseJsonLogic } from "react-querybuilder/parseJsonLogic";
 import("react-querybuilder/dist/query-builder.css");
+
+// The operators offered when the 'operators' form option is not set, before the type filters.
+const defaultOperatorNames = [
+    '=',
+    'null',
+    'contains', 'doesNotContain', 'beginsWith', 'endsWith',
+    '>', '>=', '<', '<=',
+    'in',
+];
 
 /**
  * stimulusFetch: 'lazy'
@@ -27,14 +45,13 @@ export default class extends Controller {
     // Values declared per field, to reopen a stored equality as the 'valuesList' operator it was.
     #fieldsValues = {};
 
+    // Operators declared per field, offered in place of the global list. Kept out of the field
+    // object handed to the library: it reads fieldData.operators before asking getOperators, where
+    // the labels, the translations and the custom operators are handled.
+    #fieldsOperators = {};
+
     // List of operators available (by default before filtering).
-    #operators = [
-        '=',
-        'null',
-        'contains', 'doesNotContain', 'beginsWith', 'endsWith',
-        '>', '>=', '<', '<=',
-        'in',
-    ];
+    #operators = defaultOperatorNames;
 
     // Whether the 'operators' form option replaced the default list (custom operators then require an explicit opt-in).
     #operatorsCustomized = false;
@@ -131,16 +148,100 @@ export default class extends Controller {
 
     static targets = ["queryBuilder", "input"];
 
+    // The query as the editor holds it, tracked from onQueryChange, so a remount starts from what
+    // the user typed rather than from the 'conditions' the page was rendered with.
+    #query = null;
+
+    // The 'fields', 'operators' and 'lang' values the editor was mounted with, serialized: an
+    // attribute write carrying what the editor already has is not a change.
+    #mountedSettings = null;
+
+    // The 'processor' value the hidden input was last written for. Not part of the mount: a
+    // change of format is a rewrite of the input, not a rebuild of the editor.
+    #appliedProcessor = null;
+
     connect() {
-        if (this.operatorsValue.length > 0) {
-            this.#operators = this.operatorsValue;
-            this.#operatorsCustomized = true;
+        const fields = this.#readSettings();
+        this.#appliedProcessor = this.processorValue;
+        this.#query = this.#getDefaultQuery();
+        this.#mount(fields, this.#query);
+    }
+    disconnect() {
+        this.#root?.unmount();
+        this.#root = null;
+    }
+
+    // Stimulus invokes these once after initialize(), before connect(), when there is no root yet,
+    // and then on every write of the attribute, the same value included. Neither is a reason to
+    // rebuild the editor. A real change rebuilds the editor from the three values and remounts it
+    // with the query as it currently is, so the rules typed since the page load are kept.
+    fieldsValueChanged() {
+        this.#settingsChanged();
+    }
+    operatorsValueChanged() {
+        this.#settingsChanged();
+    }
+    langValueChanged() {
+        this.#settingsChanged();
+    }
+
+    // Same guards. A real change stores the tree the editor holds in the new format, the
+    // migration a form reopened on a value saved under another processor would otherwise wait
+    // for the first edit to get.
+    processorValueChanged() {
+        if (!this.#root || this.processorValue === this.#appliedProcessor) {
+            return;
         }
+        this.#appliedProcessor = this.processorValue;
+        this.#onQueryChange(this.#query);
+    }
+
+    #settingsChanged() {
+        if (!this.#root || this.#serializeSettings() === this.#mountedSettings) {
+            return;
+        }
+        const fields = this.#readSettings();
+        const query = this.#pruneQuery(this.#query, this.#offeredOperators(fields));
+        this.#root.unmount();
+        this.#mount(fields, query);
+        // The pruned tree goes through the active processor like any edit, so the hidden input
+        // never carries a rule the server would refuse, for naming a field absent from 'fields'
+        // or an operator its field does not offer, and dirty-state trackers see the change.
+        this.#onQueryChange(query);
+    }
+
+    #serializeSettings() {
+        return JSON.stringify([this.fieldsValue, this.operatorsValue, this.langValue]);
+    }
+
+    // Everything the editor is built from, read again from the current values: the global
+    // operator list, then the field list handed to the library. Records what was read, for
+    // #settingsChanged to tell a change from a rewrite.
+    #readSettings() {
+        this.#applyOperators();
+        const fields = this.#buildFields();
+        this.#mountedSettings = this.#serializeSettings();
+        return fields;
+    }
+
+    // An empty 'operators' value is the option left unset: the defaults come back, custom
+    // operators included.
+    #applyOperators() {
+        this.#operatorsCustomized = this.operatorsValue.length > 0;
+        this.#operators = this.#operatorsCustomized ? this.operatorsValue : defaultOperatorNames;
+    }
+
+    // The field list handed to the library, sorted by label, and with it the per-field
+    // bookkeeping the processors rely on (dates, numbers, values, operators), rebuilt from the
+    // current 'fields' value.
+    #buildFields() {
         this.#fieldsDate = [];
         this.#fieldsNumber = [];
         this.#fieldsValues = {};
-        let fields = [];
+        this.#fieldsOperators = {};
+        const fields = [];
         for (const fieldConfig of this.fieldsValue) {
+            this.#setFieldOperators(fieldConfig);
             fields.push({
                 name: fieldConfig.name,
                 label: this.#makeFieldLabel(fieldConfig),
@@ -149,41 +250,67 @@ export default class extends Controller {
             });
         }
         fields.sort((a, b) => a.label.localeCompare(b.label, this.langValue));
-        const onQueryChange = (query) => {
-            let ruleProcessor = this.#getRuleProcessor();
-            const queryFormatted = formatQuery(query, {
-                format: "jsonlogic",
-                ruleProcessor,
-            });
+        return fields;
+    }
 
-            // Handle jsonLogic input value (only jsonLogic tree).
-            // An empty builder formats to false: store an empty object, never the JSON scalar '""',
-            // which the 'conditions' Object value would refuse to parse when the form is
-            // re-rendered after a failed validation, leaving the editor unmounted.
-            if (this.processorValue === 'jsonLogic') {
-                this.#updateInputValue(JSON.stringify(false === queryFormatted ? {} : queryFormatted));
+    // The operators offered on each field, as #getOperators hands them to the library, so the
+    // pruning and the select agree on what a rule can hold.
+    #offeredOperators(fields) {
+        const getOperators = this.#getOperators();
+        return new Map(fields.map((field) => [
+            field.name,
+            new Set(getOperators(field.name, { fieldData: field }).map((operator) => operator.name)),
+        ]));
+    }
+
+    // Drops the rules the new values leave nowhere to stand, on a field the list no longer
+    // declares or with an operator its field no longer offers, and a group left empty with them.
+    // Keeping them is worse on both sides: the select has no option for the vanished field or
+    // operator and shows the first one while the rule still holds the old name, and the server
+    // refuses the tree anyway. A rule with no field or no operator picked yet is not one of those
+    // and stays; the root group stays whatever is left in it. A 'valuesList' rule whose field no
+    // longer offers that operator, or no longer declares its value, becomes the equality it is
+    // stored as when the field offers '=': the value stays visible, in a text input, which is
+    // also how such a rule reopens. A value not picked yet is not one that vanished.
+    #pruneQuery(group, offeredOperators) {
+        const rules = [];
+        for (const rule of group.rules ?? []) {
+            if (rule && Array.isArray(rule.rules)) {
+                const nestedGroup = this.#pruneQuery(rule, offeredOperators);
+                if (nestedGroup.rules.length) {
+                    rules.push(nestedGroup);
+                }
+                continue;
             }
-
-            // Handle parameterized SQL input value (keep jsonLogic tree and add SQL and params)
-            if (this.processorValue === 'parameterized') {
-                ruleProcessor = this.#getParameterizedRuleProcessor();
-                const parameterizedQueryFormatted = formatQuery(query, {
-                    format: 'parameterized',
-                    ruleProcessor,
-                });
-                const inputValue = {
-                    // Same normalization as above, so both processors agree on what "empty" is.
-                    conditionTree: false === queryFormatted ? {} : queryFormatted,
-                    parameterizedSql: parameterizedQueryFormatted,
-                };
-                this.#updateInputValue(JSON.stringify(inputValue));
+            if (!rule || 'object' !== typeof rule || rule.field === defaultPlaceholderFieldName) {
+                rules.push(rule);
+                continue;
             }
-        };
+            const offered = offeredOperators.get(rule.field);
+            if (!offered) {
+                continue;
+            }
+            if (rule.operator === 'valuesList') {
+                const picked = null != rule.value && '' !== rule.value && rule.value !== defaultPlaceholderValueName;
+                if (offered.has('valuesList') && (!picked || (this.#fieldsValues[rule.field] ?? []).includes(rule.value))) {
+                    rules.push(rule);
+                } else if (offered.has('=')) {
+                    rules.push({ ...rule, operator: '=', value: picked ? rule.value : '' });
+                }
+                continue;
+            }
+            if (rule.operator === defaultPlaceholderOperatorName || offered.has(rule.operator)) {
+                rules.push(rule);
+            }
+        }
+        return { ...group, rules };
+    }
 
-        const queryBuilder = React.createElement(QueryBuilder,{
+    #mount(fields, query) {
+        const queryBuilder = React.createElement(QueryBuilder, {
             fields,
-            onQueryChange,
-            defaultQuery: this.#getDefaultQuery(),
+            onQueryChange: (changedQuery) => this.#onQueryChange(changedQuery),
+            defaultQuery: query,
             combinators: this.#getCombinators(),
             getOperators: this.#getOperators(),
             getValueEditorType: this.#getValueEditorType(),
@@ -204,9 +331,52 @@ export default class extends Controller {
             }),
         );
     }
-    disconnect() {
-        this.#root?.unmount();
-        this.#root = null;
+
+    #onQueryChange(query) {
+        this.#query = query;
+        // Handle the native input value: the tree as the editor holds it, nothing to format.
+        // An emptied editor stores the same empty object as the two other processors, so the
+        // server reads "no condition" from one and the same sentinel.
+        if (this.processorValue === 'native') {
+            const nativeTree = this.#toNativeTree(query);
+            this.#updateInputValue(JSON.stringify(nativeTree.rules.length ? nativeTree : {}));
+            return;
+        }
+        let ruleProcessor = this.#getRuleProcessor();
+        const queryFormatted = formatQuery(query, {
+            format: "jsonlogic",
+            ruleProcessor,
+        });
+
+        // Handle jsonLogic input value (only jsonLogic tree).
+        // An empty builder formats to false: store an empty object, never the JSON scalar '""',
+        // which the 'conditions' Object value would refuse to parse when the form is
+        // re-rendered after a failed validation, leaving the editor unmounted.
+        if (this.processorValue === 'jsonLogic') {
+            this.#updateInputValue(JSON.stringify(false === queryFormatted ? {} : queryFormatted));
+        }
+
+        // Handle parameterized SQL input value (keep jsonLogic tree and add SQL and params)
+        if (this.processorValue === 'parameterized') {
+            ruleProcessor = this.#getParameterizedRuleProcessor();
+            const parameterizedQueryFormatted = formatQuery(query, {
+                format: 'parameterized',
+                ruleProcessor,
+            });
+            // An empty editor stores the same empty object as the two other processors, not a
+            // wrapper around an empty tree and the neutral "(1 = 1)": the server reads null from
+            // either, and the input keeps the value the page was rendered with, so nothing fires
+            // for a form the user has not changed.
+            if (false === queryFormatted) {
+                this.#updateInputValue(JSON.stringify({}));
+                return;
+            }
+            const inputValue = {
+                conditionTree: queryFormatted,
+                parameterizedSql: parameterizedQueryFormatted,
+            };
+            this.#updateInputValue(JSON.stringify(inputValue));
+        }
     }
 
     // Guarded so the initial render does not fire a spurious event (e.g. form dirty trackers).
@@ -284,6 +454,13 @@ export default class extends Controller {
         this.#fieldsValues[fieldConfig.name] = values.map((value) => value.name);
         return { values };
     }
+    #setFieldOperators(fieldConfig) {
+        // The form refuses an empty list; this only covers a controller fed by hand.
+        if (!fieldConfig.operators?.length) {
+            return;
+        }
+        this.#fieldsOperators[fieldConfig.name] = fieldConfig.operators;
+    }
 
     #getCombinators() {
         return defaultCombinators.map(combinator => {
@@ -299,6 +476,11 @@ export default class extends Controller {
 
     #getOperators() {
         return (fieldName, { fieldData }) => {
+            // A field with its own list gets it as written: exhaustive, in that order, and free of
+            // the type filters below — the developer named these operators for this very field.
+            if (this.#fieldsOperators[fieldName]) {
+                return this.#makeFieldOperators(this.#fieldsOperators[fieldName], fieldData);
+            }
             let operators = defaultOperators.filter(
                 (op) => this.#operators.includes(op.name)
             );
@@ -351,9 +533,30 @@ export default class extends Controller {
         };
     }
 
+    // The library's own operators keep their definition, the custom ones are built as the global
+    // list builds them. 'valuesList' still needs the field's values: a select with nothing to pick
+    // is not an operator the user can complete.
+    #makeFieldOperators(names, fieldData) {
+        const operators = [];
+        for (const name of names) {
+            if (name === 'valuesList' && !fieldData.values?.length) {
+                continue;
+            }
+            const defaultOperator = defaultOperators.find((op) => op.name === name);
+            operators.push(defaultOperator
+                ? { ...defaultOperator, label: this.#makeOperatorLabel(name, defaultOperator.label) }
+                : { name, label: this.#makeOperatorLabel(name), value: name });
+        }
+        return operators;
+    }
+
     // Custom operators (regex, notRegex, ndays, valuesList) are active by default;
-    // once the 'operators' form option is set, they must be listed there.
-    #isOperatorActive(name) {
+    // once the 'operators' form option is set, they must be listed there. A field with its own
+    // list answers for itself, whatever the option says.
+    #isOperatorActive(name, fieldName = null) {
+        if (fieldName && this.#fieldsOperators[fieldName]) {
+            return this.#fieldsOperators[fieldName].includes(name);
+        }
         return !this.#operatorsCustomized || this.#operators.includes(name);
     }
 
@@ -392,10 +595,11 @@ export default class extends Controller {
                 return { ['==']: [{ var: rule.field }, rule.value]};
             }
             // Handle 'regex' and 'notRegex' operators. The tree always carries a delimited pattern,
-            // in both processors: it is JsonLogic, evaluated by the 'regex' operation this bundle
-            // ships, and a bare pattern makes preg_match fail. The SQL parameter is built from the
-            // raw value by the parameterized processor, which is where MySQL's delimiter-less
-            // REGEXP is served.
+            // in the jsonLogic and parameterized processors: it is JsonLogic, evaluated by the
+            // 'regex' operation this bundle ships, and a bare pattern makes preg_match fail. The SQL
+            // parameter is built from the raw value by the parameterized processor, which is where
+            // MySQL's delimiter-less REGEXP is served, and the native processor stores the raw
+            // value too.
             if (['regex', 'notRegex'].includes(rule.operator)) {
                 return {[rule.operator]: [{ var: rule.field }, this.#delimitRegexPattern(rule.value)]};
             }
@@ -547,6 +751,60 @@ export default class extends Controller {
         };
     }
 
+    // The tree as the editor holds it, without the keys the library adds for its own bookkeeping
+    // (ids, paths), so what is stored is what react-querybuilder documents: a group is
+    // {combinator, not, rules}, a rule {field, operator, value}. Two things are left out, as
+    // formatQuery does for the two other processors: a rule without a field or an operator picked
+    // yet, which could not pass the server-side check and is not a reason to refuse the rules the
+    // user did complete, and a group left without rules, which means nothing and, compiled
+    // naively, is a clause that is always true — inside an 'or', every row.
+    #toNativeTree(group) {
+        const rules = [];
+        for (const rule of group.rules ?? []) {
+            // The string of an independent combinator, never emitted by this editor.
+            if (!rule || 'object' !== typeof rule) {
+                continue;
+            }
+            if (Array.isArray(rule.rules)) {
+                const nestedGroup = this.#toNativeTree(rule);
+                if (nestedGroup.rules.length) {
+                    rules.push(nestedGroup);
+                }
+                continue;
+            }
+            if (rule.field === defaultPlaceholderFieldName || rule.operator === defaultPlaceholderOperatorName) {
+                continue;
+            }
+            rules.push(this.#toNativeRule(rule));
+        }
+        return {
+            combinator: group.combinator,
+            ...(group.not ? { not: true } : {}),
+            rules,
+        };
+    }
+    // Same folds as the two other processors, so a stored rule reads the same whatever the
+    // processor, and #restoreReopenedRules undoes them the same way when the form reopens.
+    #toNativeRule(rule) {
+        // 'valuesList' is stored as the equality it stands for.
+        if (rule.operator === 'valuesList') {
+            return { field: rule.field, operator: '=', value: rule.value };
+        }
+        let value = rule.value;
+        // Same guards as the jsonLogic processor on a date field: a date left half-typed, or a
+        // date string still held by a rule switched to an 'ndays' operator, is stored empty.
+        if (['<=ndays', '>=ndays'].includes(rule.operator)) {
+            value = isNaN(value) ? '' : value;
+        } else if (this.#fieldsDate.includes(rule.field)) {
+            value = this.#normalizeDateValue(rule);
+        }
+        // Newlines to commas for the 'in' and 'notIn' textareas: the stored list is
+        // comma-separated, as the library splits it, whatever the processor.
+        if (['in', 'notIn'].includes(rule.operator) && 'string' === typeof value) {
+            value = value.replaceAll(/\n/g, ',');
+        }
+        return { field: rule.field, operator: rule.operator, value };
+    }
     #getDefaultQuery() {
         const isNullValueNumber = (value) => Array.isArray(value) && value.length === 2 && [null, 0].every(v => value.includes(v));
         const getFieldInOperation = (val) => {
@@ -583,6 +841,13 @@ export default class extends Controller {
             ? this.conditionsValue
             : {};
         const conditionTree = 'conditionTree' in conditions ? conditions.conditionTree : conditions;
+        // A 'rules' key is the group of the native processor, reopened as it was stored; the two
+        // other shapes are JsonLogic, parsed back into one. Told apart on the stored value rather
+        // than on the processor option, so a query saved under one processor reopens under another
+        // and is rewritten in the new format on the next save.
+        if (null !== conditionTree && 'object' === typeof conditionTree && Array.isArray(conditionTree.rules)) {
+            return this.#restoreReopenedRules(conditionTree);
+        }
         return this.#restoreReopenedRules(parseJsonLogic(conditionTree, {
             jsonLogicOperations: {
                 in: (val) => ({
@@ -666,9 +931,10 @@ export default class extends Controller {
     // Undoes what saving folded into the tree, rule by rule. 'valuesList' is stored as a plain
     // equality, so the library reopens it as '=' with a text input, losing the select the value
     // was picked in — the equality means the same thing either way, and when the field declares
-    // that very value among its own, the select is the right editor. A 'notIn' list is stored
-    // with the textarea's newlines folded into commas, so they are folded back, as the 'in'
-    // parse handler already does for its own operator.
+    // that very value among its own, the select is the right editor. An 'in' or 'notIn' list is
+    // stored with the textarea's newlines folded into commas, so they are folded back (the
+    // JsonLogic parse handler of 'in' already joins its list with newlines, which this leaves
+    // untouched; the native tree and the JsonLogic 'notIn' hold the comma-separated string).
     #restoreReopenedRules(query) {
         if (!query || !Array.isArray(query.rules)) {
             return query;
@@ -681,11 +947,11 @@ export default class extends Controller {
                 if (rule && Array.isArray(rule.rules)) {
                     return this.#restoreReopenedRules(rule);
                 }
-                if (rule && 'notIn' === rule.operator && 'string' === typeof rule.value) {
+                if (rule && ['in', 'notIn'].includes(rule.operator) && 'string' === typeof rule.value) {
                     return { ...rule, value: rule.value.replaceAll(',', '\n') };
                 }
                 if (rule && '=' === rule.operator
-                    && this.#isOperatorActive('valuesList')
+                    && this.#isOperatorActive('valuesList', rule.field)
                     && (this.#fieldsValues[rule.field] ?? []).includes(rule.value)) {
                     return { ...rule, operator: 'valuesList' };
                 }
