@@ -4,7 +4,13 @@ All notable changes to this bundle are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - 2026.09.08
+## [1.1.1] - 2026-09-24
+
+### Changed
+
+- `thecodingmachine/safe` is required in its 3.x line, `^3.4` instead of `^2.5`. The bundle only calls `Safe\json_decode`, `Safe\json_encode` and catches `Safe\Exceptions\JsonException`, all still provided by Safe 3, so the form type behaves as before. An application that holds Safe to 2.x has to move to 3.x to install this version. Safe 3 requires PHP 8.1, already covered by the bundle's PHP 8.3 requirement.
+
+## [1.1.0] - 2026-09-08
 
 ### Added
 
@@ -39,5 +45,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `JsonLogicOperations`, registering into a PHP JsonLogic evaluator the seven operations the trees use beyond standard JsonLogic: `startsWith`, `endsWith`, `regex`, `notRegex`, `<=ndays`, `>=ndays` and `notNull`.
 - Requirements: PHP 8.3 or later, Symfony 7.4, AssetMapper, Stimulus and Twig, and Bootstrap CSS on the pages that render the widget. Continuous integration runs PHPStan, Psalm and PHP-CS-Fixer.
 
+[1.1.1]: https://github.com/openstudio-fr/query-builder-bundle/releases/tag/v1.1.1
 [1.1.0]: https://github.com/openstudio-fr/query-builder-bundle/releases/tag/v1.1.0
 [1.0.0]: https://github.com/openstudio-fr/query-builder-bundle/releases/tag/v1.0.0
