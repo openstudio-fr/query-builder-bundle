@@ -318,7 +318,7 @@ export default class extends Controller {
             translations: this.#getTranslations(),
             autoSelectField: false,
             autoSelectValue: false,
-            listsAsArrays: false,
+            listsAsArrays: true,
             enableDragAndDrop: true,
             enableMountQueryChange: false,
             controlClassnames: { queryBuilder: 'queryBuilder-branches' },
@@ -454,6 +454,21 @@ export default class extends Controller {
         this.#fieldsValues[fieldConfig.name] = values.map((value) => value.name);
         return { values };
     }
+    #hasListValues(fieldName) {
+        return (this.#fieldsValues[fieldName] ?? []).length > 0;
+    }
+
+    // A list stored before the multiselect, or by the JsonLogic 'in' handler, read back as the
+    // array the multiselect holds: a comma-separated string is split, an array is kept as is.
+    #toValuesArray(value) {
+        if (Array.isArray(value)) {
+            return value.map(String);
+        }
+        if (null === value || undefined === value) {
+            return [];
+        }
+        return String(value).split(/[\n,]/).map((item) => item.trim()).filter((item) => '' !== item);
+    }
     #setFieldOperators(fieldConfig) {
         // The form refuses an empty list; this only covers a controller fed by hand.
         if (!fieldConfig.operators?.length) {
@@ -565,6 +580,9 @@ export default class extends Controller {
         return `${label}   ( ${name} )`;
     }
 
+    // 'in' and 'notIn' pick several of the field's values when it declares some, in a
+    // multiselect stored as an array (listsAsArrays): a value holding a comma survives, where a
+    // comma-joined string would split it. Without values they keep the textarea, one per line.
     #getValueEditorType() {
         return (field, operator) => {
             switch (operator) {
@@ -572,7 +590,7 @@ export default class extends Controller {
                     return 'select';
                 case 'in':
                 case 'notIn':
-                    return 'textarea';
+                    return this.#hasListValues(field) ? 'multiselect' : 'textarea';
                 default:
                     return 'text';
             }
@@ -829,9 +847,16 @@ export default class extends Controller {
             if (isNullValueNumber(val[1])) {
                 return null;
             }
-            return convertCommaToNewline(val[1]);
+            return convertCommaToNewline(val[1], getFieldInOperation(val));
         }
-        const convertCommaToNewline = (value) => Array.isArray(value) ? value.join('\n') : value;
+        // A field with values reopens its list in a multiselect: the array is kept whole, joining
+        // it would split a value holding a comma on the way back.
+        const convertCommaToNewline = (value, field) => {
+            if (!Array.isArray(value) || this.#hasListValues(field)) {
+                return value;
+            }
+            return value.join('\n');
+        };
 
         // The 'parameterized' processor wraps the tree next to the SQL; every other stored value IS
         // the tree. Detected on the key, not on its truthiness: a tree stored as false or null (an
@@ -858,7 +883,7 @@ export default class extends Controller {
                 notIn: (val) => ({
                     field: val[0].var,
                     operator: 'notIn',
-                    value: convertCommaToNewline(val[1]),
+                    value: convertCommaToNewline(val[1], val[0].var),
                 }),
                 notNull: (val) => ({
                     field: val[0].var,
@@ -934,7 +959,9 @@ export default class extends Controller {
     // that very value among its own, the select is the right editor. An 'in' or 'notIn' list is
     // stored with the textarea's newlines folded into commas, so they are folded back (the
     // JsonLogic parse handler of 'in' already joins its list with newlines, which this leaves
-    // untouched; the native tree and the JsonLogic 'notIn' hold the comma-separated string).
+    // untouched; the native tree and the JsonLogic 'notIn' hold the comma-separated string). On a
+    // field with values the list goes to a multiselect instead, as an array, whatever its stored
+    // shape: the comma-separated string of a list saved before the multiselect is split.
     #restoreReopenedRules(query) {
         if (!query || !Array.isArray(query.rules)) {
             return query;
@@ -946,6 +973,9 @@ export default class extends Controller {
                 // combinator, for instance) falls through untouched.
                 if (rule && Array.isArray(rule.rules)) {
                     return this.#restoreReopenedRules(rule);
+                }
+                if (rule && ['in', 'notIn'].includes(rule.operator) && this.#hasListValues(rule.field)) {
+                    return { ...rule, value: this.#toValuesArray(rule.value) };
                 }
                 if (rule && ['in', 'notIn'].includes(rule.operator) && 'string' === typeof rule.value) {
                     return { ...rule, value: rule.value.replaceAll(',', '\n') };

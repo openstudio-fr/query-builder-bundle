@@ -4,6 +4,12 @@ All notable changes to this bundle are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-06
+
+### Changed
+
+- `in` and `notIn` on a field that declares `values` use a multiselect of those values instead of a textarea, so a list is picked rather than typed as ids. The editor runs with `listsAsArrays`: the picked values are stored as an array, whatever the processor, and a value holding a comma (a title, for instance) stays whole where a comma-separated string would split it. Fields without `values` keep the textarea and the comma-separated list. `between` and `notBetween` are stored as an array of their two values as well. A list saved before as a comma-separated string on a field with `values` reopens in the multiselect and is stored as an array at the next save. An application that reads the stored value has to accept an array for these operators.
+
 ## [1.1.1] - 2026-09-24
 
 ### Changed
@@ -45,6 +51,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `JsonLogicOperations`, registering into a PHP JsonLogic evaluator the seven operations the trees use beyond standard JsonLogic: `startsWith`, `endsWith`, `regex`, `notRegex`, `<=ndays`, `>=ndays` and `notNull`.
 - Requirements: PHP 8.3 or later, Symfony 7.4, AssetMapper, Stimulus and Twig, and Bootstrap CSS on the pages that render the widget. Continuous integration runs PHPStan, Psalm and PHP-CS-Fixer.
 
+[1.2.0]: https://github.com/openstudio-fr/query-builder-bundle/releases/tag/v1.2.0
 [1.1.1]: https://github.com/openstudio-fr/query-builder-bundle/releases/tag/v1.1.1
 [1.1.0]: https://github.com/openstudio-fr/query-builder-bundle/releases/tag/v1.1.0
 [1.0.0]: https://github.com/openstudio-fr/query-builder-bundle/releases/tag/v1.0.0

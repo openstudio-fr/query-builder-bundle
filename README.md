@@ -239,7 +239,7 @@ The enum is exhaustive: a `type` outside it throws an `InvalidOptionsException` 
 
 Each operator label in the UI also shows its technical name in parentheses. Behaviors that do not show in the table:
 
-- `in` and `notIn` use a textarea with one value per line. The stored list is comma-separated, whatever the processor.
+- `in` and `notIn` use a multiselect of the field's `values` when it declares some, stored as an array of the picked values, so a value holding a comma stays whole. Without `values` they use a textarea with one value per line, stored comma-separated, whatever the processor. A comma-separated list saved before on a field with `values` reopens in the multiselect and is stored as an array at the next save.
 - `<=ndays` and `>=ndays` compare the age of a date field in days from today. In parameterized SQL they become `datediff(curdate(), field)` comparisons; the native tree keeps the operator name and the number of days.
 - On a `Number` field, `null` ("is empty") matches both `NULL` and `0`, in the `jsonLogic` and `parameterized` processors: the tree holds an inclusion in `[null, 0]`, and the SQL fragment is `field is null or field = 0`. `notNull` ("is not empty") is its exact complement — `field is not null and field <> 0` — so a `0` never satisfies both. The native tree carries the operator as picked (`null`, `notNull`) and leaves that choice to the application.
 - On a field with `values`, the extra "List of values" operator outputs a plain equality. Reopening the query gives the rule that operator back, and its select, as long as the stored value is still one of the field's declared values — otherwise it comes back as a plain `=`.
@@ -281,8 +281,8 @@ The full list:
 | `Operator::DoesNotContain`         | `doesNotContain` | Does not contain the substring                                     |
 | `Operator::BeginsWith`             | `beginsWith`     | Begins with                                                        |
 | `Operator::EndsWith`               | `endsWith`       | Ends with                                                          |
-| `Operator::In`                     | `in`             | Matches one of the listed values (textarea, one value per line)    |
-| `Operator::NotIn`                  | `notIn`          | Matches none of the listed values (textarea, one value per line)   |
+| `Operator::In`                     | `in`             | Matches one of the listed values (multiselect, or textarea)        |
+| `Operator::NotIn`                  | `notIn`          | Matches none of the listed values (multiselect, or textarea)       |
 | `Operator::Null`                   | `null`           | Is empty (on a `Number` field, matches both `NULL` and `0`)        |
 | `Operator::NotNull`                | `notNull`        | Is not empty                                                       |
 | `Operator::Regex`                  | `regex`          | Matches the regular expression                                     |
@@ -321,7 +321,7 @@ new Field(
 
 The array shape takes it as well, as enum cases or backing strings: `'operators' => ['=', 'in', 'notIn']`. The list follows the rules of the option: an empty list, a repeated or an unknown operator throws an `InvalidOptionsException` when the form is built.
 
-When set, the list is the exhaustive, ordered set of operators for that field and replaces the global list there, whether the option is `null` or not. It is taken as written: the operators were named for this very field, so the type compatibility rules above do not filter it — which is what lets a `Number` field offer `in` and `notIn`, or a `Text` field do without `regex`. The value editor still follows the operator (a textarea for `in`/`notIn`, a select for `valuesList`, a number input for the `ndays` operators), and `valuesList` is still only offered when the field declares `values`. Fields without the property behave as before, and the server-side check follows the same split (see [Security](#security)).
+When set, the list is the exhaustive, ordered set of operators for that field and replaces the global list there, whether the option is `null` or not. It is taken as written: the operators were named for this very field, so the type compatibility rules above do not filter it — which is what lets a `Number` field offer `in` and `notIn`, or a `Text` field do without `regex`. The value editor still follows the operator (a multiselect for `in`/`notIn` on a field with `values` and a textarea otherwise, a select for `valuesList`, a number input for the `ndays` operators), and `valuesList` is still only offered when the field declares `values`. Fields without the property behave as before, and the server-side check follows the same split (see [Security](#security)).
 
 ### Processor
 
@@ -510,9 +510,9 @@ For the same query, the stored value is:
 }
 ```
 
-A nested group is a rule holding `rules` of its own, with its `combinator` and, when the group is negated, `"not": true`. The ids and paths the editor keeps for itself are not stored. Three things differ from what the editor displays, and are undone when the query reopens: a "List of values" rule is stored as `=`, an `in`/`notIn` list is comma-separated, and a rule left without a field or an operator is left out, as is a group left without rules.
+A nested group is a rule holding `rules` of its own, with its `combinator` and, when the group is negated, `"not": true`. The ids and paths the editor keeps for itself are not stored. Three things differ from what the editor displays, and are undone when the query reopens: a "List of values" rule is stored as `=`, an `in`/`notIn` list typed in a textarea is comma-separated (picked in a multiselect, it is an array), and a rule left without a field or an operator is left out, as is a group left without rules.
 
-The operator names are those of the `Operator` enum, and the values are what the inputs hold: strings, `true`/`false` for a `Boolean` field, a comma-separated pair for `between`. Nothing is rewritten for evaluation — `regex` holds the pattern as typed, `null` on a `Number` field is the operator alone — so the section below does not apply: the tree is not JsonLogic.
+The operator names are those of the `Operator` enum, and the values are what the inputs hold: strings, `true`/`false` for a `Boolean` field, an array for an `in`/`notIn` list picked in a multiselect, a pair of values for `between`. Nothing is rewritten for evaluation — `regex` holds the pattern as typed, `null` on a `Number` field is the operator alone — so the section below does not apply: the tree is not JsonLogic.
 
 ### Evaluating a saved tree
 
